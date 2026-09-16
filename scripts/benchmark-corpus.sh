@@ -35,6 +35,11 @@ echo "Fetching corpus into $CORPUS_DIR"
 clone nodegoat  https://github.com/OWASP/NodeGoat.git
 clone juiceshop https://github.com/juiceshop/juice-shop.git
 
+# Solidity corpora. Ethernaut levels are each a documented vulnerability;
+# OpenZeppelin contracts are audited, so findings there are false positives.
+clone ethernaut https://github.com/OpenZeppelin/ethernaut.git
+clone oz        https://github.com/OpenZeppelin/openzeppelin-contracts.git
+
 echo
 echo "=============================================="
 echo " Benchmarking"
@@ -50,13 +55,22 @@ for target in nodegoat juiceshop; do
   fi
 done
 
+for target in "ethernaut" "oz/contracts"; do
+  if [[ -d "$CORPUS_DIR/$target" ]]; then
+    echo
+    echo "--- $target (Solidity) ---"
+    npx tsx tools/benchmark_corpus.ts "$CORPUS_DIR/$target" || true
+  fi
+done
+
 echo
 echo "Interpretation:"
-echo "  nodegoat  -> 1 finding expected (the documented IDOR in allocations.js)"
-echo "  juiceshop -> ~10 findings expected (BOLA in basketItems.ts + hardcoded"
-echo "               credentials in routes/login.ts / lib/insecurity.ts)."
-echo "               Every finding should be triaged with tools/triage_findings.ts."
+echo "  nodegoat   -> 1 finding  (the documented IDOR in allocations.js)"
+echo "  juiceshop  -> ~10 findings (BOLA + hardcoded credentials)"
+echo "  ethernaut  -> ~5 findings among 25+ known-vulnerable levels"
+echo "  oz         -> 0 findings expected (audited code; any hit is a false"
+echo "                positive and should be investigated)"
 echo
-echo "Triaging a finding with its surrounding code:"
-echo "  npx tsx tools/triage_findings.ts $CORPUS_DIR/nodegoat"
+echo "Triaging findings with their surrounding code:"
+echo "  npx tsx tools/triage_findings.ts $CORPUS_DIR/ethernaut"
 echo

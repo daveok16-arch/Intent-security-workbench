@@ -65,13 +65,30 @@ Measured results:
 | Labelled unit benchmark | 3 TP / 0 FP / 0 FN | `tools/benchmark_precision.ts` |
 | OWASP NodeGoat | **1** | the documented IDOR in `app/routes/allocations.js` |
 | OWASP Juice Shop | **10** | BOLA in `routes/basketItems.ts`; hardcoded credentials in `routes/login.ts`, `lib/insecurity.ts` |
+| OpenZeppelin Ethernaut | **5** | among 25+ documented-vulnerable levels |
+| OpenZeppelin Contracts (audited) | **0** | 367 files; any hit would be a false positive |
 
-Every finding was triaged against its source. Two rule defects were found and
-fixed this way: `RULE-AUTH-002` flagged a legitimate `role === 'admin'` check, and
-`RULE-CONTRACT-001` flagged *checked* low-level calls — all four of Juice Shop's
-`web3WalletChallenge` files capture the return value and `require(...)` it, yet all
-were reported. That rule now excludes any call whose result is assigned, using a
-metavariable LHS (enumerating the Solidity tuple syntax did not work).
+The audited-OpenZeppelin result is the precision control: 0 findings across 367
+reviewed files. Ethernaut is the recall control.
+
+### Solidity coverage
+
+Originally there was **one** Solidity rule, so the canonical vulnerability classes
+went undetected — Ethernaut's `Reentrance.sol` was missed entirely. Added
+`RULE-REENT-001` (external call preceding a state update, CWE-841). Ethernaut
+findings went from 2 to 5. Two Semgrep syntax details cost real time and are worth
+remembering:
+
+- `pattern: A; B; C;` with adjacent statements matches **nothing** in Solidity; the
+  `...` sequence ellipsis is required.
+- `$STATE = $EXPR` does not match compound assignments like `-=`, so the update
+  forms must be enumerated. `$S[..]` is a parse error; indexed access needs
+  `$S[$KEY]`.
+
+A rule that matches a region in several `pattern-either` variants produces
+overlapping results for one defect (Ethernaut `Stake.sol` returned three ranges for
+one call site). The Semgrep service now collapses overlapping same-rule ranges,
+keeping the widest.
 
 Run against real applications with:
 ```bash

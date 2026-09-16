@@ -424,6 +424,36 @@ export class SemgrepAnalysisService {
       console.error('Failed to parse Semgrep JSON output:', err);
     }
 
+    // A rule written as several pattern-either variants can match the same code
+    // region more than once, yielding overlapping results for one defect (seen
+    // with RULE-REENT-001 on Ethernaut Stake.sol: lines 23-27, 23-28 and 27-28).
+    // Collapse overlapping ranges from the same rule and file, keeping the
+    // widest so the reported span still covers the whole defect.
+    const deduped: CandidateFinding[] = [];
+    for (const cand of candidates) {
+      const overlapping = deduped.find(
+        (k) =>
+          k.rule_id === cand.rule_id &&
+          k.file_path === cand.file_path &&
+          (cand.line_start ?? 0) <= (k.line_end ?? 0) &&
+          (cand.line_end ?? 0) >= (k.line_start ?? 0)
+      );
+      if (!overlapping) {
+        deduped.push(cand);
+        continue;
+      }
+      const widerStart = Math.min(overlapping.line_start ?? 0, cand.line_start ?? 0);
+      const widerEnd = Math.max(overlapping.line_end ?? 0, cand.line_end ?? 0);
+      if (widerEnd - widerStart > (overlapping.line_end ?? 0) - (overlapping.line_start ?? 0)) {
+        overlapping.line_start = widerStart;
+        overlapping.line_end = widerEnd;
+      }
+    }
+    if (deduped.length !== candidates.length) {
+      candidates.length = 0;
+      candidates.push(...deduped);
+    }
+
     return {
       execution: {
         status: executionStatus,

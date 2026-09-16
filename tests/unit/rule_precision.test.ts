@@ -237,7 +237,7 @@ function SessionHandler(db) {
   describe('6. Generated Semgrep rule pack', () => {
     it('contains every registered rule and is syntactically usable', () => {
       const yaml = globalSecurityRuleRegistry.generateSemgrepConfig();
-      const ids = ['INTENT-BOLA-001', 'RULE-BOLA-001', 'RULE-AUTH-002', 'RULE-CONTRACT-001'];
+      const ids = ['INTENT-BOLA-001', 'RULE-BOLA-001', 'RULE-AUTH-002', 'RULE-CONTRACT-001', 'RULE-REENT-001'];
       for (const id of ids) {
         expect(yaml).toContain(`- id: ${id}`);
       }
@@ -249,6 +249,16 @@ function SessionHandler(db) {
         expect(b).toMatch(/languages:/);
         expect(b).toMatch(/severity:/);
       }
+    });
+
+    it('has a Solidity rule for the major vulnerability classes', () => {
+      const rules = globalSecurityRuleRegistry.list();
+      const solidityIds = rules.filter((r) => r.languages.includes('solidity')).map((r) => r.id);
+      // Reentrancy is the most common Solidity defect class; its absence would
+      // leave a large blind spot (only one Solidity rule existed originally).
+      expect(solidityIds).toContain('RULE-REENT-001');
+      expect(solidityIds).toContain('RULE-CONTRACT-001');
+      expect(solidityIds).toContain('RULE-ACCESS-001');
     });
   });
 });
