@@ -1,0 +1,16 @@
+node_modules
+dist
+build
+coverage
+.git
+.gitignore
+.env
+.env.*
+!.env.example
+*.log
+.test_fixtures
+data/sources
+storage/investigations
+fixtures/dynamic_verification
+tests/fixtures
+AGENTS.md

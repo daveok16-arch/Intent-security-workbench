@@ -1,0 +1,53 @@
+# Intent Security Workbench — production image
+#
+# Builds the Vite frontend bundle and the bundled Node server, then runs the
+# server in production mode. The server serves dist/ and exposes the REST API
+# plus the /ws event stream on API_PORT.
+#
+# Analysis binaries (git, semgrep, z3, forge/anvil, spectral) are deliberately
+# NOT installed here. Engines resolve them at runtime and truthfully report
+# NOT_INSTALLED when absent, so an image without them stays anti-fabrication
+# correct — it simply cannot execute those engines.
+
+FROM node:22-bookworm-slim AS build
+
+WORKDIR /app
+
+COPY package.json package-lock.json ./
+RUN npm ci
+
+COPY . .
+RUN npm run build
+
+
+FROM node:22-bookworm-slim AS runtime
+
+ENV NODE_ENV=production \
+    ENVIRONMENT=production \
+    API_PORT=3000 \
+    API_HOST=0.0.0.0
+
+WORKDIR /app
+
+# git is required for real source acquisition and snapshot integrity checks.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev && npm cache clean --force
+
+COPY --from=build /app/dist ./dist
+
+# Writable locations for the evidence store and investigation workspaces.
+RUN mkdir -p /app/storage /app/data \
+    && chown -R node:node /app/storage /app/data
+
+USER node
+
+EXPOSE 3000
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD node -e "fetch('http://127.0.0.1:'+(process.env.API_PORT||3000)+'/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+
+CMD ["node", "dist/server.cjs"]

@@ -1,0 +1,9 @@
+{
+  "snapshot_id": "snap-1789578855984-c7irs",
+  "target_id": "tgt-test-1789578855983",
+  "repository_url": "/workspace/project/.test_fixtures/real_git_1789578855925",
+  "resolved_commit_sha": "e5bb1a9e96a6c35cbe7ebe22bd775c9c3d57a400",
+  "source_hash": "6f15e548e27540cc1af0f0fc30e9d75cf5eba3a4f1b4d9f3527d335790541087",
+  "acquired_at": "2026-09-16T17:14:15.984Z",
+  "provider": "git"
+}

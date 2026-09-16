@@ -1,0 +1,1 @@
+contract VaultV1 { uint256 public balance; }

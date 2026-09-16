@@ -1,0 +1,7 @@
+rules:
+  - id: test-eval-detect
+    patterns:
+      - pattern: eval(...)
+    message: "Dynamic code execution via eval"
+    languages: [javascript]
+    severity: ERROR

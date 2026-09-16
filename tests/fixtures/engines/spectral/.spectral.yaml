@@ -1,0 +1,8 @@
+rules:
+  operation-description:
+    description: Operation must have a description
+    given: "$.paths.*.*"
+    then:
+      field: description
+      function: truthy
+    severity: warn

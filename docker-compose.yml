@@ -1,0 +1,67 @@
+version: '3.8'
+
+# ==============================================================================
+# Local deployment topology.
+#
+# The workbench backend is the Node server (`server.ts` / `dist/server.cjs`),
+# which owns the REST API and the `/ws` event stream. It binds API_PORT/API_HOST
+# and defaults to in-memory persistence with an in-process job queue, so Postgres
+# and Redis are optional and only provisioned here for future distributed mode.
+#
+# `apps/api/python` is a separate, not-yet-wired FastAPI implementation used for
+# schema prototyping; it is intentionally not part of this topology.
+# ==============================================================================
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: intent-sec-postgres
+    environment:
+      POSTGRES_DB: intent_security
+      POSTGRES_USER: intent_user
+      POSTGRES_PASSWORD: intent_secure_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U intent_user -d intent_security"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: intent-sec-redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  web:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.web
+    container_name: intent-sec-web
+    ports:
+      - "3000:3000"
+    environment:
+      API_PORT: 3000
+      API_HOST: 0.0.0.0
+      ENVIRONMENT: production
+      NODE_ENV: production
+      # Uncomment to point at the optional services above. The application runs
+      # without them using in-memory persistence and an in-process queue.
+      # DATABASE_URL: postgresql://intent_user:intent_secure_password@postgres:5432/intent_security
+      # REDIS_URL: redis://redis:6379/0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+volumes:
+  postgres_data:

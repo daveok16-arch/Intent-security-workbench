@@ -1,0 +1,1 @@
+contract Vault { function deposit() external {} }

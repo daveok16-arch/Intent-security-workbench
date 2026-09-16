@@ -1,0 +1,7 @@
+[2026-09-07T09:06:10.307Z] Initiating source acquisition for target 'Local Test Git Target' (tgt-test-1788771970305)
+[2026-09-07T09:06:10.307Z] Repository source: /app/applet/.test_fixtures/real_git_1788771970154
+[2026-09-07T09:06:10.307Z] Detected local directory source at /app/applet/.test_fixtures/real_git_1788771970154. Copying repository files...
+[2026-09-07T09:06:10.320Z] Checking out local target commit: 6e085f78b8b098a5d2633e452109ef2325e97218
+[2026-09-07T09:06:10.343Z] Resolved local Git commit SHA: 6e085f78b8b098a5d2633e452109ef2325e97218
+[2026-09-07T09:06:10.343Z] Computing cryptographic SHA-256 hash over directory tree...
+[2026-09-07T09:06:10.344Z] Computed source tree hash: 6f15e548e27540cc1af0f0fc30e9d75cf5eba3a4f1b4d9f3527d335790541087
