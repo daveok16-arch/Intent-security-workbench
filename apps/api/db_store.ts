@@ -38,27 +38,107 @@ import {
 } from '../../packages/api-analysis/src/types.js';
 import { VerificationResult } from '../../packages/formal-verification/src/types.js';
 import { DynamicVerificationJob } from '../../packages/dynamic-verification/src/types.js';
+import { PersistenceManager, resolvePersistenceConfig, TrackedMap } from './persistence.js';
 
 export class DatabaseStore {
-  public programs: Map<string, Program> = new Map();
-  public targets: Map<string, Target> = new Map();
-  public scopeEntries: Map<string, ScopeEntry> = new Map();
-  public investigations: Map<string, Investigation> = new Map();
-  public evidence: Map<string, EvidenceArtifact> = new Map();
+  public programs: TrackedMap<string, Program>;
+  public targets: TrackedMap<string, Target>;
+  public scopeEntries: TrackedMap<string, ScopeEntry>;
+  public investigations: TrackedMap<string, Investigation>;
+  public evidence: TrackedMap<string, EvidenceArtifact>;
   public rawArtifactStorage: Map<string, string | Buffer> = new Map();
-  public findings: Map<string, Finding> = new Map();
-  public apiContracts: Map<string, APIContract> = new Map();
-  public authorizationCandidates: Map<string, AuthorizationCandidate> = new Map();
-  public contractDiffs: Map<string, ContractDiffResult> = new Map();
-  public verificationResults: Map<string, VerificationResult> = new Map();
-  public dynamicVerificationJobs: Map<string, DynamicVerificationJob> = new Map();
+  public findings: TrackedMap<string, Finding>;
+  public apiContracts: TrackedMap<string, APIContract>;
+  public authorizationCandidates: TrackedMap<string, AuthorizationCandidate>;
+  public contractDiffs: TrackedMap<string, ContractDiffResult>;
+  public verificationResults: TrackedMap<string, VerificationResult>;
+  public dynamicVerificationJobs: TrackedMap<string, DynamicVerificationJob>;
   public storage: IArtifactStorage = globalArtifactStorage;
+  private persistence?: PersistenceManager;
 
-  constructor(storage?: IArtifactStorage) {
+  constructor(storage?: IArtifactStorage, persistence?: PersistenceManager) {
     if (storage) {
       this.storage = storage;
     }
-    // Empty on startup - zero fake records
+    this.persistence = persistence ?? new PersistenceManager(resolvePersistenceConfig());
+
+    const track = () => new TrackedMap<string, any>(() => this.persist());
+    this.programs = track() as TrackedMap<string, Program>;
+    this.targets = track() as TrackedMap<string, Target>;
+    this.scopeEntries = track() as TrackedMap<string, ScopeEntry>;
+    this.investigations = track() as TrackedMap<string, Investigation>;
+    this.evidence = track() as TrackedMap<string, EvidenceArtifact>;
+    this.findings = track() as TrackedMap<string, Finding>;
+    this.apiContracts = track() as TrackedMap<string, APIContract>;
+    this.authorizationCandidates = track() as TrackedMap<string, AuthorizationCandidate>;
+    this.contractDiffs = track() as TrackedMap<string, ContractDiffResult>;
+    this.verificationResults = track() as TrackedMap<string, VerificationResult>;
+    this.dynamicVerificationJobs = track() as TrackedMap<string, DynamicVerificationJob>;
+
+    this.restore();
+  }
+
+  /** Persists the domain collections (debounced and coalesced). */
+  private persist(): void {
+    this.persistence?.scheduleWrite(() => this.snapshotState());
+  }
+
+  /** Writes a snapshot immediately; used at shutdown for a clean final state. */
+  flushPersistence(): void {
+    this.persistence?.flush(() => this.snapshotState());
+  }
+
+  /** The persisted record set. Binary artifact content lives in artifact storage. */
+  private snapshotState(): Record<string, unknown> {
+    return {
+      programs: this.programs,
+      targets: this.targets,
+      scopeEntries: this.scopeEntries,
+      investigations: this.investigations,
+      evidence: this.evidence,
+      findings: this.findings,
+      apiContracts: this.apiContracts,
+      authorizationCandidates: this.authorizationCandidates,
+      contractDiffs: this.contractDiffs,
+      verificationResults: this.verificationResults,
+      dynamicVerificationJobs: this.dynamicVerificationJobs,
+    };
+  }
+
+  /**
+   * Rehydrates collections from the last snapshot. Records are restored as-is;
+   * a corrupt snapshot leaves the store empty rather than failing startup.
+   */
+  private restore(): void {
+    const collections = this.persistence?.load();
+    if (!collections) return;
+
+    const targetsByName: Array<[keyof DatabaseStore, Map<string, any>]> = [
+      ['programs', this.programs],
+      ['targets', this.targets],
+      ['scopeEntries', this.scopeEntries],
+      ['investigations', this.investigations],
+      ['evidence', this.evidence],
+      ['findings', this.findings],
+      ['apiContracts', this.apiContracts],
+      ['authorizationCandidates', this.authorizationCandidates],
+      ['contractDiffs', this.contractDiffs],
+      ['verificationResults', this.verificationResults],
+      ['dynamicVerificationJobs', this.dynamicVerificationJobs],
+    ];
+
+    let restored = 0;
+    for (const [name, map] of targetsByName) {
+      const values = (collections as Record<string, unknown>)[name as string];
+      if (!values || typeof values !== 'object') continue;
+      for (const [id, record] of Object.entries(values as Record<string, any>)) {
+        map.set(id, record);
+        restored++;
+      }
+    }
+    if (restored > 0) {
+      console.log(`[PERSISTENCE] Restored ${restored} records from ${this.persistence?.filePath}`);
+    }
   }
 
   // --- Program Operations ---

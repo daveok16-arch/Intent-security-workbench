@@ -9,3 +9,14 @@ coverage/
 .env.local
 .env.*.local
 !.env.example
+
+# Runtime-generated state. Files already tracked from the initial import stay
+# tracked; these rules stop new churn from test runs and normal operation.
+storage/db/
+storage/investigations/
+data/sources/
+fixtures/**/out/
+fixtures/**/cache/
+tests/fixtures/**/out/
+tests/fixtures/**/cache/
+.test_fixtures/
