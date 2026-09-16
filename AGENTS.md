@@ -90,6 +90,28 @@ overlapping results for one defect (Ethernaut `Stake.sol` returned three ranges 
 one call site). The Semgrep service now collapses overlapping same-rule ranges,
 keeping the widest.
 
+### Reentrancy guard suppression
+
+The order-based rule also fired on the **fixed** Juice Shop contract, which uses a
+manual mutex: a flag is assigned before the call and reset after. That reset is what
+the rule sees. Expressing the exclusion in the rule did not work — several
+`pattern-not-inside` variants were verified to still match, so Semgrep's cross-block
+reasoning for Solidity is unreliable here.
+
+The check is done in `SemgrepAnalysisService.isGuardedReentrancy`, where it can be
+reasoned about and tested: if a state variable is assigned both before and after the
+call *within the same function*, it is acting as a guard. Two bugs were found and
+fixed while building it, both caught by corpus results rather than by inspection:
+
+- Matching any `=` treated the comparison in `if (balances[msg.sender] >= _amount)`
+  as an assignment, which wrongly suppressed Ethernaut's canonical reentrancy.
+- A fixed-width window reached into the *preceding* function, so `donate()`'s write
+  to `balances` looked like a guard for `withdraw()`. The window now walks to the
+  enclosing function boundaries.
+
+`tests/unit/rule_precision.test.ts` pins both directions: a genuine reentrancy must
+survive, and a mutex-protected variant must not be reported.
+
 Run against real applications with:
 ```bash
 ./scripts/benchmark-corpus.sh                 # clones and benchmarks both
