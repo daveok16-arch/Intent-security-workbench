@@ -43,6 +43,8 @@ export class StaticAnalysisCorrelationService {
     // Track matched pairs
     const matchedTsIds = new Set<string>();
     const matchedSgIds = new Set<string>();
+    // Semgrep ids that already produced a correlated finding (see below).
+    const correlatedSgIds = new Set<string>();
 
     for (const tsCand of treesitterCandidates) {
       let isCorroborated = false;
@@ -71,6 +73,15 @@ export class StaticAnalysisCorrelationService {
       }
 
       if (isCorroborated && matchingSg) {
+        // One Semgrep match may overlap several Tree-sitter candidates (e.g. a
+        // route handler and its inner query). Emitting a correlated finding per
+        // pairing produced duplicate findings for the same defect, so each
+        // Semgrep match yields at most one correlated finding.
+        if (correlatedSgIds.has(matchingSg.id)) {
+          combined.push(tsCand);
+          continue;
+        }
+        correlatedSgIds.add(matchingSg.id);
         corroboratedCount++;
         // Create unified Correlated Candidate
         const correlatedId = `cand-corr-${crypto.randomBytes(6).toString('hex')}`;
