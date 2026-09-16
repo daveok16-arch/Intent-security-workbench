@@ -52,11 +52,34 @@ npx tsx tools/benchmark_precision.ts  # rule precision/recall benchmark
 ## Engine precision
 
 The structural engine requires genuine HTTP route context *and* real data flow
-before reporting BOLA, so ordinary library code is not flagged. Measured with
-`tools/benchmark_precision.ts`: 100% precision, 100% recall over a labelled set of
-vulnerable route handlers and safe library code. Scanning the project's own
-`packages/` tree previously produced 45 HIGH findings, all false positives; it now
-produces 0. `tests/unit/rule_precision.test.ts` pins this in both directions.
+before reporting BOLA, so ordinary library code is not flagged. It understands the
+shapes real applications use: `req.params.x`, `req.query.x`, `req.body.x`,
+destructured bindings (`const { userId } = req.params`), and data layers named with
+a `DAO`/`Repository`/`Model`/`Store` suffix.
+
+Measured results:
+
+| Target | Findings | Notes |
+| --- | --- | --- |
+| This project's own `packages/` | 0 | was 45, all false positives |
+| Labelled unit benchmark | 3 TP / 0 FP / 0 FN | `tools/benchmark_precision.ts` |
+| OWASP NodeGoat | **1** | the documented IDOR in `app/routes/allocations.js` |
+| OWASP Juice Shop | **15** | BOLA in `routes/basketItems.ts`; hardcoded credentials in `routes/login.ts` and `lib/insecurity.ts` |
+
+Run against real applications with:
+```bash
+./scripts/benchmark-corpus.sh                 # clones and benchmarks both
+npx tsx tools/triage_findings.ts <dir>        # shows each finding with its code
+```
+
+Evidence in findings is extracted from the source (the actual request value and
+the actual data-layer call). It is never a hardcoded placeholder — reporting a
+fixed `req.params.id` / `db.getAccount(...)` for every hit would assert things the
+code does not contain.
+
+The Semgrep rule pack is validated before each scan. An invalid generated rule
+would otherwise make Semgrep emit an empty `results` array, which is
+indistinguishable from a clean scan, silently disabling a rule class.
 
 Optional engines (`angr`, `codeql`, `slither`, `foundry`, `clarinet`) are Phase 1/2
 placeholders: if their binary is present they return a structured `FAILED` result

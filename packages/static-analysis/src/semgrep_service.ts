@@ -191,6 +191,37 @@ export class SemgrepAnalysisService {
     const rulesYaml = customRulesYaml || globalSecurityRuleRegistry.generateSemgrepConfig();
     fs.writeFileSync(rulesPath, rulesYaml, 'utf-8');
 
+    // Validate the rule pack before scanning. Semgrep exits non-zero on an
+    // invalid config but still emits a JSON envelope with an empty `results`
+    // array, which is indistinguishable from "scanned cleanly, found nothing".
+    // A malformed generated rule would therefore silently disable a whole rule
+    // class and report a clean scan. Fail loudly instead.
+    try {
+      execFileSync(avail.path, ['--config', rulesPath, '--validate'], {
+        encoding: 'utf-8',
+        timeout: 30000,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+    } catch (err: any) {
+      const detail = (err.stdout ? err.stdout.toString('utf-8') : '') + (err.stderr ? err.stderr.toString('utf-8') : '');
+      return {
+        execution: {
+          status: 'FAILED',
+          executable_path: avail.path,
+          version: avail.version,
+          command: `${avail.path} --config <rules> --validate`,
+          exit_code: typeof err.status === 'number' ? err.status : 1,
+          stdout: detail,
+          stderr: `INVALID_RULE_PACK: generated Semgrep rules failed validation. ${detail.slice(0, 400)}`,
+          duration_ms: Date.now() - startTime,
+          raw_findings_count: 0,
+          error: 'INVALID_RULE_PACK: the generated Semgrep rule configuration is invalid; no scan was performed.',
+        },
+        candidates: [],
+        artifactIds: [],
+      };
+    }
+
     // Resolve to an absolute path: cwd is set to this directory below, so a
     // relative scan root would be resolved from inside itself and rejected.
     const scanRoot = path.resolve(targetDir);

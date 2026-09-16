@@ -124,4 +124,107 @@ router.get('/health', async (req, res) => {
       expect(c.filter((x) => x.rule_id === 'INTENT-BOLA-001')).toEqual([]);
     });
   });
+
+  /**
+   * Shapes taken from real applications (OWASP NodeGoat, OWASP Juice Shop) that
+   * the engine previously mishandled. Each case was observed in the wild.
+   */
+  describe('5. Real-world shapes (NodeGoat / Juice Shop)', () => {
+    it('detects a destructured route param reaching a DAO lookup (NodeGoat allocations.js)', async () => {
+      const c = await scan('allocations.js', `
+const AllocationsDAO = require("../data/allocations-dao").AllocationsDAO;
+function AllocationsHandler(db) {
+    "use strict";
+    const allocationsDAO = new AllocationsDAO(db);
+    this.displayAllocations = (req, res, next) => {
+        const { userId } = req.params;
+        const { threshold } = req.query;
+        allocationsDAO.getByUserIdAndThreshold(userId, threshold, (err, allocations) => {
+            if (err) return next(err);
+            return res.render("allocations", { userId, allocations });
+        });
+    };
+}
+module.exports = AllocationsHandler;
+`);
+      const bola = c.filter((x) => x.rule_id === 'INTENT-BOLA-001');
+      expect(bola.length).toBeGreaterThan(0);
+      // The real handler must be identified, and reported once (no nested duplicate).
+      expect(bola).toHaveLength(1);
+      // The narrower arrow handler is kept, not the enclosing constructor.
+      expect(bola[0].line_start).toBeGreaterThan(1);
+      expect(bola[0].structural_evidence?.function_name).toBe('anonymous');
+    });
+
+    it('reports the real request value and lookup call, not a fabricated one', async () => {
+      const c = await scan('allocations.js', `
+function AllocationsHandler(db) {
+    const allocationsDAO = new AllocationsDAO(db);
+    this.displayAllocations = (req, res, next) => {
+        const { userId } = req.params;
+        allocationsDAO.getByUserIdAndThreshold(userId, 10, cb);
+    };
+}
+`);
+      const bola = c.find((x) => x.rule_id === 'INTENT-BOLA-001');
+      expect(bola).toBeDefined();
+      // Previously hardcoded to 'req.params.id' / 'db.getAccount(...)' for every
+      // finding, which asserted evidence the code did not contain.
+      expect(bola!.data_flow?.source).toBe('userId');
+      expect(bola!.data_flow?.object).toContain('allocationsDAO.getByUserIdAndThreshold');
+      expect(JSON.stringify(bola!.data_flow)).not.toContain('db.getAccount');
+    });
+
+    it('ignores a handler that reads the user id from the session (NodeGoat profile.js)', async () => {
+      // Reading the authenticated user's id from the session is the *correct*
+      // pattern, not an attacker-controlled identifier.
+      const c = await scan('profile.js', `
+function ProfileHandler(db) {
+    const profile = new ProfileDAO(db);
+    this.displayProfile = (req, res, next) => {
+        const { userId } = req.session;
+        profile.getByUserId(parseInt(userId), (err, doc) => {
+            if (err) return next(err);
+            return res.render("profile", { user: doc });
+        });
+    };
+}
+`);
+      expect(c.filter((x) => x.rule_id === 'INTENT-BOLA-001')).toEqual([]);
+    });
+
+    it('ignores create-only data calls (NodeGoat memos.js insert)', async () => {
+      // Creating a record is not object-level authorization failure: there is no
+      // pre-existing object reached by an attacker-supplied identifier.
+      const c = await scan('memos.js', `
+function MemosHandler(db) {
+    const memosDAO = new MemosDAO(db);
+    this.addMemos = (req, res, next) => {
+        memosDAO.insert(req.body.memo, (err, docs) => {
+            if (err) return next(err);
+            return res.render("memos", { memosList: docs });
+        });
+    };
+}
+`);
+      expect(c.filter((x) => x.rule_id === 'INTENT-BOLA-001')).toEqual([]);
+    });
+
+    it('ignores a login handler passing a username to the data layer', async () => {
+      // username/password are credentials or content, not object identifiers.
+      const c = await scan('session.js', `
+function SessionHandler(db) {
+    const userDAO = new UserDAO(db);
+    this.login = (req, res, next) => {
+        const { userName, password } = req.body;
+        userDAO.validateLogin(userName, password, (err, user) => {
+            if (err) return next(err);
+            return res.redirect("/");
+        });
+    };
+}
+`);
+      expect(c.filter((x) => x.rule_id === 'INTENT-BOLA-001')).toEqual([]);
+    });
+  });
 });

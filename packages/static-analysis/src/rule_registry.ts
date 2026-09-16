@@ -213,13 +213,19 @@ export class SecurityRuleRegistry {
 - id: RULE-AUTH-002
   languages: [javascript, typescript]
   severity: ERROR
-  message: "Hardcoded credential comparison in authentication path"
+  message: "Hardcoded credential in authentication path"
   metadata:
     cwe: "CWE-798"
   patterns:
     - pattern-either:
-        - pattern: $PASS === "admin"
-        - pattern: $TOKEN === "secret"
+        - pattern: $PASS === "..."
+        - pattern: '... === $PASS'
+        - pattern: $PASS == "..."
+    - metavariable-regex:
+        metavariable: $PASS
+        regex: "(?i).*(pass|passwd|password|secret|token|apikey|api_key|credential|authkey).*"
+    - pattern-not: $PASS === ""
+    - pattern-not: $PASS === "undefined"
 `,
       },
 
