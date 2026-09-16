@@ -3,6 +3,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { globalTreeSitterService } from '../../packages/static-analysis/src/treesitter_service.js';
+import { globalSecurityRuleRegistry } from '../../packages/static-analysis/src/rule_registry.js';
 
 /**
  * Precision regression tests for the structural BOLA / access-control rules.
@@ -225,6 +226,29 @@ function SessionHandler(db) {
 }
 `);
       expect(c.filter((x) => x.rule_id === 'INTENT-BOLA-001')).toEqual([]);
+    });
+  });
+
+  /**
+   * Rule-pack sanity. A malformed generated rule makes Semgrep emit an empty
+   * results array with an error envelope, which is indistinguishable from a
+   * clean scan — silently disabling a rule class while reporting success.
+   */
+  describe('6. Generated Semgrep rule pack', () => {
+    it('contains every registered rule and is syntactically usable', () => {
+      const yaml = globalSecurityRuleRegistry.generateSemgrepConfig();
+      const ids = ['INTENT-BOLA-001', 'RULE-BOLA-001', 'RULE-AUTH-002', 'RULE-CONTRACT-001'];
+      for (const id of ids) {
+        expect(yaml).toContain(`- id: ${id}`);
+      }
+      // Unquoted flow-style braces break YAML parsing.
+      expect(yaml).not.toMatch(/pattern: \$[A-Z_]+\.[A-Za-z]+\{[^']/);
+      // Every rule needs a languages list and a severity.
+      const ruleBlocks = yaml.split(/\n(?=- id: )/).filter((b) => b.startsWith('- id: '));
+      for (const b of ruleBlocks) {
+        expect(b).toMatch(/languages:/);
+        expect(b).toMatch(/severity:/);
+      }
     });
   });
 });

@@ -53,8 +53,9 @@ done
 echo
 echo "Interpretation:"
 echo "  nodegoat  -> 1 finding expected (the documented IDOR in allocations.js)"
-echo "  juiceshop -> ~15 findings expected (BOLA in basketItems.ts + hardcoded"
-echo "               credentials in login.ts / lib/insecurity.ts)"
+echo "  juiceshop -> ~10 findings expected (BOLA in basketItems.ts + hardcoded"
+echo "               credentials in routes/login.ts / lib/insecurity.ts)."
+echo "               Every finding should be triaged with tools/triage_findings.ts."
 echo
 echo "Triaging a finding with its surrounding code:"
 echo "  npx tsx tools/triage_findings.ts $CORPUS_DIR/nodegoat"

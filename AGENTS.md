@@ -64,7 +64,14 @@ Measured results:
 | This project's own `packages/` | 0 | was 45, all false positives |
 | Labelled unit benchmark | 3 TP / 0 FP / 0 FN | `tools/benchmark_precision.ts` |
 | OWASP NodeGoat | **1** | the documented IDOR in `app/routes/allocations.js` |
-| OWASP Juice Shop | **15** | BOLA in `routes/basketItems.ts`; hardcoded credentials in `routes/login.ts` and `lib/insecurity.ts` |
+| OWASP Juice Shop | **10** | BOLA in `routes/basketItems.ts`; hardcoded credentials in `routes/login.ts`, `lib/insecurity.ts` |
+
+Every finding was triaged against its source. Two rule defects were found and
+fixed this way: `RULE-AUTH-002` flagged a legitimate `role === 'admin'` check, and
+`RULE-CONTRACT-001` flagged *checked* low-level calls — all four of Juice Shop's
+`web3WalletChallenge` files capture the return value and `require(...)` it, yet all
+were reported. That rule now excludes any call whose result is assigned, using a
+metavariable LHS (enumerating the Solidity tuple syntax did not work).
 
 Run against real applications with:
 ```bash

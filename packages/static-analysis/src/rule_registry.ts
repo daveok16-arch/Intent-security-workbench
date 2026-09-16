@@ -581,8 +581,20 @@ export class SecurityRuleRegistry {
   message: "Unchecked low-level call return value"
   metadata:
     cwe: "CWE-252"
-  pattern: |
-    $TARGET.call{value: $VAL}("")
+  patterns:
+    # The call forms must be a single pattern-either: stacking several
+    # 'pattern:' entries ANDs them together and matches nothing.
+    - pattern-either:
+        - pattern: '$TARGET.call{value: $VAL}($ARG)'
+        - pattern: '$TARGET.call($ARG)'
+    # A call whose result is assigned to anything is being captured, which is
+    # the fix. Matching the whole assignment with a metavariable LHS covers both
+    # the tuple form (bool ok, ) = ... and the plain form bool ok = ...;
+    # enumerating the tuple syntax explicitly did not exclude the tuple form.
+    - pattern-not-inside: |
+        $LHS = $TARGET.call{value: $VAL}($ARG);
+    - pattern-not-inside: |
+        $LHS = $TARGET.call($ARG);
 `,
       },
     ];
