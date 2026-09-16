@@ -133,6 +133,21 @@ export class SemgrepAnalysisService {
   }
 
   /**
+   * Reduces a Semgrep check_id to the bare rule id defined in the rule registry.
+   * Semgrep prefixes ids with the rules file path, e.g.
+   * "tmp.intent-semgrep-ab12cd.INTENT-BOLA-001" -> "INTENT-BOLA-001".
+   */
+  private normalizeRuleId(checkId: string): string {
+    if (!checkId) return '';
+    const lastDot = checkId.lastIndexOf('.');
+    const tail = lastDot >= 0 ? checkId.slice(lastDot + 1) : checkId;
+    // Prefer a known registry id; otherwise fall back to the trailing segment.
+    if (globalSecurityRuleRegistry.get(tail)) return tail;
+    if (globalSecurityRuleRegistry.get(checkId)) return checkId;
+    return tail || checkId;
+  }
+
+  /**
    * Executes genuine Semgrep CLI against checked-out source code.
    */
   async executeScan(
@@ -302,7 +317,12 @@ export class SemgrepAnalysisService {
         rawFindingsCount = results.length;
 
         for (const item of results) {
-          const ruleId = item.check_id;
+          // Semgrep prefixes check_id with the config path (e.g.
+          // "tmp.intent-semgrep-XXXX.INTENT-BOLA-001"), and that temp directory
+          // name changes every run. Normalise to the bare rule id so registry
+          // lookups resolve and rule ids stay stable across executions.
+          const rawRuleId: string = item.check_id || '';
+          const ruleId = this.normalizeRuleId(rawRuleId);
           const rule = globalSecurityRuleRegistry.get(ruleId);
           const relPath = path.isAbsolute(item.path) ? path.relative(targetDir, item.path) : item.path;
           const candidateId = `cand-sg-${ruleId}-${crypto.randomBytes(4).toString('hex')}`;
