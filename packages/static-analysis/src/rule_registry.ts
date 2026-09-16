@@ -595,6 +595,80 @@ export class SecurityRuleRegistry {
         $LHS = $TARGET.call{value: $VAL}($ARG);
     - pattern-not-inside: |
         $LHS = $TARGET.call($ARG);
+    # Returning the call forwards the result to the caller, who can check it —
+    # also not an unchecked call. OpenZeppelin's RelayedCall returns the call
+    # result directly from the function.
+    - pattern-not-inside: |
+        return $TARGET.call{value: $VAL}($ARG);
+    - pattern-not-inside: |
+        return $TARGET.call($ARG);
+`,
+      },
+
+      // 18. REENTRANCY
+      {
+        id: 'RULE-REENT-001',
+        name: 'Reentrancy: External Call Precedes State Update',
+        description:
+          'Detects the canonical reentrancy pattern, where a low-level external call is made before the contract updates its own state, allowing a malicious callee to re-enter before the balance is decremented.',
+        category: StaticRuleCategory.SMART_CONTRACT,
+        languages: ['solidity'],
+        severity: Severity.HIGH,
+        cwe_ids: ['CWE-841'],
+        owasp_categories: ['SC05:2023-Reentrancy'],
+        source: 'built-in',
+        version: '1.0.0',
+        confidence: Confidence.HIGH,
+        confidence_basis:
+          'A state variable is written after an external call within the same function body, with no reentrancy guard.',
+        remediation:
+          'Apply the checks-effects-interactions pattern (update state before the external call) or add a nonReentrant mutex.',
+        semgrep_yaml: `
+- id: RULE-REENT-001
+  languages: [solidity]
+  severity: ERROR
+  message: "Reentrancy: state updated after external call"
+  metadata:
+    cwe: "CWE-841"
+  patterns:
+    # External call followed later in the same function by a state update.
+    # Note: a bare '\$STATE = \$EXPR' does not match compound assignments, and
+    # 'pattern: ...; ...; ...' with adjacent statements matches nothing, so the
+    # sequence ellipsis plus explicit update forms are used.
+    - pattern-either:
+        - pattern: |
+            \$TARGET.call{value: \$VAL}(\$ARG);
+            ...
+            \$STATE -= \$EXPR;
+        - pattern: |
+            \$TARGET.call{value: \$VAL}(\$ARG);
+            ...
+            \$STATE = \$EXPR;
+        - pattern: |
+            \$TARGET.call{value: \$VAL}(\$ARG);
+            ...
+            \$STATE[\$KEY] = \$EXPR;
+        - pattern: |
+            \$TARGET.call{value: \$VAL}(\$ARG);
+            ...
+            \$STATE[\$KEY] -= \$EXPR;
+        - pattern: |
+            \$TARGET.call(\$ARG);
+            ...
+            \$STATE -= \$EXPR;
+        - pattern: |
+            \$TARGET.call(\$ARG);
+            ...
+            \$STATE = \$EXPR;
+    # A reentrancy guard means the ordering is intentional and safe.
+    - pattern-not-inside: |
+        function \$F(...) nonReentrant {
+          ...
+        }
+    - pattern-not-inside: |
+        function \$F(...) nonReentrant(...) {
+          ...
+        }
 `,
       },
     ];

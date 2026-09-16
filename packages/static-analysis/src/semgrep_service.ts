@@ -133,6 +133,78 @@ export class SemgrepAnalysisService {
   }
 
   /**
+   * Suppresses reentrancy findings whose state update is re-guarded before the
+   * external call.
+   *
+   * The manual-mutex idiom writes a guard flag before the call and resets it
+   * after (Juice Shop's fixed web3WalletChallenge):
+   *
+   *     userWithdrawing[msg.sender] = ... ;   // arm the guard
+   *     balances[msg.sender] -= _amount;
+   *     (bool ok, ) = msg.sender.call{...}("");
+   *     userWithdrawing[msg.sender] = 0;       // disarm
+   *
+   * The last assignment is what a purely order-based rule sees, so it reports
+   * reentrancy on code that is actually protected. Expressing the exclusion in
+   * the rule did not work — Semgrep's cross-block matching for Solidity is
+   * unreliable here, and several variants were verified to still match — so the
+   * check is done on the source, where it can be reasoned about and tested.
+   */
+  private isGuardedReentrancy(ruleId: string, sourceLines: string[], startLine: number, endLine: number): boolean {
+    if (!ruleId.includes('REENT')) return false;
+
+    // Walk outwards from the call to the enclosing function boundary. Using a
+    // fixed-width window instead reached into the *previous* function and saw
+    // unrelated writes (Ethernaut Reentrance.sol: the preceding donate() writes
+    // `balances[_to]`), which wrongly suppressed the canonical reentrancy.
+    const callLine = startLine - 1; // 0-based
+    let fnStart = 0;
+    for (let i = callLine; i >= 0; i--) {
+      if (/^\s*(function\s|constructor\s|receive\s*\(|fallback\s*\()/.test(sourceLines[i])) {
+        fnStart = i;
+        break;
+      }
+    }
+    let fnEnd = sourceLines.length - 1;
+    for (let i = callLine; i < sourceLines.length; i++) {
+      if (/^\s*}\s*$/.test(sourceLines[i])) {
+        fnEnd = i;
+        break;
+      }
+    }
+
+    const window = sourceLines.slice(fnStart, fnEnd + 1);
+    const callIdx = callLine - fnStart;
+    if (callIdx <= 0) return false;
+
+    const before = window.slice(0, callIdx);
+    const after = window.slice(callIdx + 1);
+
+    // A state variable assigned both before and after the call within the same
+    // function is acting as a reentrancy guard.
+    //
+    // The operator must be an assignment: matching bare `=` also matched the
+    // comparison in `if (balances[msg.sender] >= _amount)`.
+    const writeRe = /([A-Za-z_][A-Za-z0-9_]*)\s*(\[[^\]]*\])?\s*(?:\+=|-=|\*=|\/=|=)(?!=)/g;
+    const writtenBefore = new Set<string>();
+    for (const line of before) {
+      let m: RegExpExecArray | null;
+      const re = new RegExp(writeRe.source, 'g');
+      while ((m = re.exec(line))) writtenBefore.add(m[1]);
+    }
+    if (writtenBefore.size === 0) return false;
+
+    for (const line of after) {
+      let m: RegExpExecArray | null;
+      const re = new RegExp(writeRe.source, 'g');
+      while ((m = re.exec(line))) {
+        if (writtenBefore.has(m[1])) return true;
+      }
+    }
+    return false;
+  }
+
+  /**
    * Reduces a Semgrep check_id to the bare rule id defined in the rule registry.
    * Semgrep prefixes ids with the rules file path, e.g.
    * "tmp.intent-semgrep-ab12cd.INTENT-BOLA-001" -> "INTENT-BOLA-001".
@@ -348,6 +420,18 @@ export class SemgrepAnalysisService {
         rawFindingsCount = results.length;
 
         for (const item of results) {
+          // Suppress reentrancy hits whose state update is re-guarded before the
+          // call (the manual-mutex idiom). See isGuardedReentrancy.
+          const itemRuleId = this.normalizeRuleId(item.check_id || '');
+          if (itemRuleId.includes('REENT')) {
+            const absSource = fs.existsSync(item.path) ? fs.readFileSync(item.path, 'utf-8').split('\n') : [];
+            if (
+              absSource.length > 0 &&
+              this.isGuardedReentrancy(itemRuleId, absSource, item.start?.line || 1, item.end?.line || item.start?.line || 1)
+            ) {
+              continue;
+            }
+          }
           // Semgrep prefixes check_id with the config path (e.g.
           // "tmp.intent-semgrep-XXXX.INTENT-BOLA-001"), and that temp directory
           // name changes every run. Normalise to the bare rule id so registry
@@ -422,6 +506,36 @@ export class SemgrepAnalysisService {
       }
     } catch (err: any) {
       console.error('Failed to parse Semgrep JSON output:', err);
+    }
+
+    // A rule written as several pattern-either variants can match the same code
+    // region more than once, yielding overlapping results for one defect (seen
+    // with RULE-REENT-001 on Ethernaut Stake.sol: lines 23-27, 23-28 and 27-28).
+    // Collapse overlapping ranges from the same rule and file, keeping the
+    // widest so the reported span still covers the whole defect.
+    const deduped: CandidateFinding[] = [];
+    for (const cand of candidates) {
+      const overlapping = deduped.find(
+        (k) =>
+          k.rule_id === cand.rule_id &&
+          k.file_path === cand.file_path &&
+          (cand.line_start ?? 0) <= (k.line_end ?? 0) &&
+          (cand.line_end ?? 0) >= (k.line_start ?? 0)
+      );
+      if (!overlapping) {
+        deduped.push(cand);
+        continue;
+      }
+      const widerStart = Math.min(overlapping.line_start ?? 0, cand.line_start ?? 0);
+      const widerEnd = Math.max(overlapping.line_end ?? 0, cand.line_end ?? 0);
+      if (widerEnd - widerStart > (overlapping.line_end ?? 0) - (overlapping.line_start ?? 0)) {
+        overlapping.line_start = widerStart;
+        overlapping.line_end = widerEnd;
+      }
+    }
+    if (deduped.length !== candidates.length) {
+      candidates.length = 0;
+      candidates.push(...deduped);
     }
 
     return {

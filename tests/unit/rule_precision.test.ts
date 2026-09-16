@@ -4,6 +4,7 @@ import os from 'os';
 import path from 'path';
 import { globalTreeSitterService } from '../../packages/static-analysis/src/treesitter_service.js';
 import { globalSecurityRuleRegistry } from '../../packages/static-analysis/src/rule_registry.js';
+import { globalSemgrepService } from '../../packages/static-analysis/src/semgrep_service.js';
 
 /**
  * Precision regression tests for the structural BOLA / access-control rules.
@@ -237,7 +238,7 @@ function SessionHandler(db) {
   describe('6. Generated Semgrep rule pack', () => {
     it('contains every registered rule and is syntactically usable', () => {
       const yaml = globalSecurityRuleRegistry.generateSemgrepConfig();
-      const ids = ['INTENT-BOLA-001', 'RULE-BOLA-001', 'RULE-AUTH-002', 'RULE-CONTRACT-001'];
+      const ids = ['INTENT-BOLA-001', 'RULE-BOLA-001', 'RULE-AUTH-002', 'RULE-CONTRACT-001', 'RULE-REENT-001'];
       for (const id of ids) {
         expect(yaml).toContain(`- id: ${id}`);
       }
@@ -249,6 +250,70 @@ function SessionHandler(db) {
         expect(b).toMatch(/languages:/);
         expect(b).toMatch(/severity:/);
       }
+    });
+
+    it('has a Solidity rule for the major vulnerability classes', () => {
+      const rules = globalSecurityRuleRegistry.list();
+      const solidityIds = rules.filter((r) => r.languages.includes('solidity')).map((r) => r.id);
+      // Reentrancy is the most common Solidity defect class; its absence would
+      // leave a large blind spot (only one Solidity rule existed originally).
+      expect(solidityIds).toContain('RULE-REENT-001');
+      expect(solidityIds).toContain('RULE-CONTRACT-001');
+      expect(solidityIds).toContain('RULE-ACCESS-001');
+    });
+  });
+
+  /**
+   * The reentrancy guard suppression operates on source text, so it is tested
+   * directly: a genuine reentrancy must survive, and a mutex-protected variant
+   * must not be reported.
+   */
+  describe('7. Reentrancy guard suppression', () => {
+    it('keeps a canonical reentrancy and drops the mutex-protected variant', async () => {
+      const source = `
+contract Guard {
+    mapping(address => uint256) public balances;
+    mapping(address => uint256) public userWithdrawing;
+
+    function donate(address _to) public payable {
+        balances[_to] = balances[_to] + msg.value;
+    }
+
+    function vulnerable(uint256 _amount) public {
+        if (balances[msg.sender] >= _amount) {
+            (bool result,) = msg.sender.call{value: _amount}("");
+            if (result) { _amount; }
+            balances[msg.sender] -= _amount;
+        }
+    }
+
+    function mutexed(uint256 _amount) public {
+        require(balances[msg.sender] >= _amount);
+        if (userWithdrawing[msg.sender] <= 1) {
+            userWithdrawing[msg.sender] = userWithdrawing[msg.sender] + 1;
+        } else {
+            userWithdrawing[msg.sender] = 0;
+            return;
+        }
+        balances[msg.sender] -= _amount;
+        (bool ok,) = msg.sender.call{value: _amount}("");
+        require(ok, "failed");
+        userWithdrawing[msg.sender] = 0;
+    }
+}`;
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'reent-'));
+      fs.writeFileSync(path.join(dir, 'Guard.sol'), source);
+      const scanRes = await globalSemgrepService.executeScan(dir, 'snap-r', 'inv-r', 'tgt-r');
+      const reent = scanRes.candidates.filter((x) => x.rule_id === 'RULE-REENT-001');
+      // The genuine reentrancy must survive: the preceding donate() writes the
+      // same state variable and must not be mistaken for a guard.
+      // Exactly one finding, and it must be in the vulnerable function.
+      expect(reent).toHaveLength(1);
+      const vulnerableLine = source.split('\n').findIndex((l) => l.includes('function vulnerable'));
+      const mutexedLine = source.split('\n').findIndex((l) => l.includes('function mutexed'));
+      const reported = (reent[0].line_start ?? 0) - 1;
+      expect(reported).toBeGreaterThan(vulnerableLine);
+      expect(reported).toBeLessThan(mutexedLine);
     });
   });
 });

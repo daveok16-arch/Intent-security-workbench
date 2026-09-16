@@ -65,13 +65,52 @@ Measured results:
 | Labelled unit benchmark | 3 TP / 0 FP / 0 FN | `tools/benchmark_precision.ts` |
 | OWASP NodeGoat | **1** | the documented IDOR in `app/routes/allocations.js` |
 | OWASP Juice Shop | **10** | BOLA in `routes/basketItems.ts`; hardcoded credentials in `routes/login.ts`, `lib/insecurity.ts` |
+| OpenZeppelin Ethernaut | **5** | among 25+ documented-vulnerable levels |
+| OpenZeppelin Contracts (audited) | **0** | 367 files; any hit would be a false positive |
 
-Every finding was triaged against its source. Two rule defects were found and
-fixed this way: `RULE-AUTH-002` flagged a legitimate `role === 'admin'` check, and
-`RULE-CONTRACT-001` flagged *checked* low-level calls — all four of Juice Shop's
-`web3WalletChallenge` files capture the return value and `require(...)` it, yet all
-were reported. That rule now excludes any call whose result is assigned, using a
-metavariable LHS (enumerating the Solidity tuple syntax did not work).
+The audited-OpenZeppelin result is the precision control: 0 findings across 367
+reviewed files. Ethernaut is the recall control.
+
+### Solidity coverage
+
+Originally there was **one** Solidity rule, so the canonical vulnerability classes
+went undetected — Ethernaut's `Reentrance.sol` was missed entirely. Added
+`RULE-REENT-001` (external call preceding a state update, CWE-841). Ethernaut
+findings went from 2 to 5. Two Semgrep syntax details cost real time and are worth
+remembering:
+
+- `pattern: A; B; C;` with adjacent statements matches **nothing** in Solidity; the
+  `...` sequence ellipsis is required.
+- `$STATE = $EXPR` does not match compound assignments like `-=`, so the update
+  forms must be enumerated. `$S[..]` is a parse error; indexed access needs
+  `$S[$KEY]`.
+
+A rule that matches a region in several `pattern-either` variants produces
+overlapping results for one defect (Ethernaut `Stake.sol` returned three ranges for
+one call site). The Semgrep service now collapses overlapping same-rule ranges,
+keeping the widest.
+
+### Reentrancy guard suppression
+
+The order-based rule also fired on the **fixed** Juice Shop contract, which uses a
+manual mutex: a flag is assigned before the call and reset after. That reset is what
+the rule sees. Expressing the exclusion in the rule did not work — several
+`pattern-not-inside` variants were verified to still match, so Semgrep's cross-block
+reasoning for Solidity is unreliable here.
+
+The check is done in `SemgrepAnalysisService.isGuardedReentrancy`, where it can be
+reasoned about and tested: if a state variable is assigned both before and after the
+call *within the same function*, it is acting as a guard. Two bugs were found and
+fixed while building it, both caught by corpus results rather than by inspection:
+
+- Matching any `=` treated the comparison in `if (balances[msg.sender] >= _amount)`
+  as an assignment, which wrongly suppressed Ethernaut's canonical reentrancy.
+- A fixed-width window reached into the *preceding* function, so `donate()`'s write
+  to `balances` looked like a guard for `withdraw()`. The window now walks to the
+  enclosing function boundaries.
+
+`tests/unit/rule_precision.test.ts` pins both directions: a genuine reentrancy must
+survive, and a mutex-protected variant must not be reported.
 
 Run against real applications with:
 ```bash
