@@ -1,0 +1,6 @@
+{
+  "name": "Intent Security Workbench",
+  "description": "Production-oriented foundational architecture for multi-program security research, evidence provenance, background job orchestration, and verification state machines.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

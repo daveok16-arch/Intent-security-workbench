@@ -1,0 +1,9 @@
+{
+  "snapshot_id": "snap-1788599629181-yyzxx",
+  "target_id": "tgt-test-1788599629180",
+  "repository_url": "/app/applet/.test_fixtures/real_git_1788599629087",
+  "resolved_commit_sha": "8817911ff23776be302005c1dbdb1e6bf307a187",
+  "source_hash": "6f15e548e27540cc1af0f0fc30e9d75cf5eba3a4f1b4d9f3527d335790541087",
+  "acquired_at": "2026-09-05T09:13:49.181Z",
+  "provider": "git"
+}

@@ -1,0 +1,7 @@
+[2026-09-16T17:20:13.703Z] Initiating source acquisition for target 'Local Test Git Target' (tgt-test-1789579213699)
+[2026-09-16T17:20:13.703Z] Repository source: /workspace/project/.test_fixtures/real_git_1789579213635
+[2026-09-16T17:20:13.704Z] Detected local directory source at /workspace/project/.test_fixtures/real_git_1789579213635. Copying repository files...
+[2026-09-16T17:20:13.716Z] Checking out local target commit: 4c315a60e40323b542732d80aee79cab995739db
+[2026-09-16T17:20:13.743Z] Resolved local Git commit SHA: 4c315a60e40323b542732d80aee79cab995739db
+[2026-09-16T17:20:13.743Z] Computing cryptographic SHA-256 hash over directory tree...
+[2026-09-16T17:20:13.744Z] Computed source tree hash: 6f15e548e27540cc1af0f0fc30e9d75cf5eba3a4f1b4d9f3527d335790541087
