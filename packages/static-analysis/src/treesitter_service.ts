@@ -404,15 +404,44 @@ export class TreeSitterAnalysisService {
         }
       }
 
-      // Check for route parameter or external input parameter
-      const hasRouteParam = /req\.params(\.[a-zA-Z0-9_]+|\[)/i.test(fnText) || /req\.query/i.test(fnText) || /req\.body/i.test(fnText);
-      const hasResourceLookup = /db(\.[a-zA-Z0-9_]+)*\.(findOne|find|get|getAccount|findById|getUser)/i.test(fnText) ||
-                                /(Account|User|Resource|Document|Order)\.(findOne|find|findById|get)\s*\(/i.test(fnText);
+      // Check for route parameter or external input parameter.
+      //
+      // BOLA is an *HTTP request* defect: an attacker-supplied identifier from
+      // the request is used to reach a resource without an ownership check.
+      // Requiring genuine request context is what keeps this rule from firing on
+      // ordinary library code, where `get(`/`delete(`/`add(` are ubiquitous.
+      const hasRequestParam =
+        /(req|request)\.(params|query|body)\s*(\.|\[)/i.test(fnText) ||
+        /\bctx\.(params|query|body)\b/i.test(fnText) ||
+        /\bevent\.(pathParameters|queryStringParameters)\b/i.test(fnText);
+      // Node/Express-style handler signature, e.g. (req, res) or (request, reply).
+      const hasHandlerSignature = /\(\s*(req|request)\s*,\s*(res|reply|response)\b/.test(fnText);
+      // Route registration: router.get('/x/:id', ...) / app.post(...).
+      const hasRouteRegistration =
+        /\b(router|app|server|api|route)\.(get|post|put|patch|delete|all|use)\s*\(\s*['"`]/i.test(fnText) ||
+        /\b(router|app|server|api|route)\.(get|post|put|patch|delete|all|use)\s*\(/.test(fnText);
+      // Handler declared as a route callback: router.get('/x/:id', async (req,res) => ...)
+      const isRouteHandler = hasRouteRegistration || hasHandlerSignature;
+      const hasRouteParam = hasRequestParam;
 
-      // Check for sensitive sink / state mutation / transfer / deletion
-      const hasMutationOrTransfer = /db(\.[a-zA-Z0-9_]+)*\.(deleteOne|deleteMany|delete|update|updateOne|updateMany|save|insert|remove)\s*\(/i.test(fnText) ||
-                                    /(transfer|send|call|withdraw|delete|update|mutate)\s*\(/i.test(fnText) ||
-                                    /\.(balance|amount)\s*[\+\-\*\/]?=/i.test(fnText);
+      // Resource lookup, anchored on data-access idioms rather than bare verbs.
+      const hasResourceLookup =
+        /\b(db|database|repository|repo|prisma|sequelize|knex|collection|model|Model|store)\s*(\.\s*[a-zA-Z0-9_]+\s*)*\.\s*(findOne|findById|findUnique|findFirst|findByPk|find|get|getById|getAccount|getUser|query|select)\s*\(/i.test(fnText) ||
+        /\b(Document|Order|Account|User|Resource|Invoice|Payment|Wallet|Vault|Profile)\s*\.\s*(findOne|findById|findUnique|findFirst|find|get|query)\s*\(/.test(fnText);
+
+      // Sensitive sink: a mutation, transfer, or destructive operation on data.
+      const hasMutationOrTransfer =
+        /\b(db|database|repository|repo|prisma|sequelize|knex|collection|model|Model|store)\s*(\.\s*[a-zA-Z0-9_]+\s*)*\.\s*(deleteOne|deleteMany|deleteById|updateOne|updateMany|update|save|insert|insertOne|remove|destroy)\s*\(/i.test(fnText) ||
+        /\.\s*(transfer|transferFrom|sendValue|withdraw|withdrawAll|burn|mint)\s*\(/.test(fnText) ||
+        /\.\s*(balance|amount|owner|ownerId)\s*=[^=]/.test(fnText);
+
+      // The request-supplied identifier must actually flow into the lookup or
+      // mutation, otherwise this is an unrelated function that merely happens to
+      // reference request data.
+      const usesRequestValueInQuery =
+        /(findOne|findById|findUnique|findFirst|find|get|getById|query|select|deleteOne|deleteMany|updateOne|updateMany|update|save|remove|destroy)\s*\(\s*\{?[^)]{0,120}(req|request)\.(params|query|body)/is.test(fnText) ||
+        /\b(const|let|var)\s+([a-zA-Z0-9_]+)\s*=\s*(req|request)\.(params|query|body)\b/i.test(fnText) ||
+        /\b(ctx|event)\.(params|query|body|pathParameters)\b/i.test(fnText);
 
       // Check for explicit authorization boundary / identity comparison
       const hasAuthBoundary = /assert\s*\(\s*.*(==|===|!=|!==).*\)/i.test(fnText) ||
@@ -420,9 +449,25 @@ export class TreeSitterAnalysisService {
                               /if\s*\(\s*.*(!==|!=|==|===).*\)\s*(throw|return)/i.test(fnText) ||
                               /(caller\s*==\s*owner|msg\.sender\s*==|user\.id\s*===|user\.id\s*!==|doc\.ownerId\s*!==|ownerId\s*!==|userId:\s*(currentUserId|req\.user\.id|userId)|isOwner|hasPermission|checkAuth|onlyOwner)/i.test(fnText);
 
-      // Deterministic BOLA Candidate Evaluation:
-      // If (resource lookup or mutation exists) AND (route param or parameter exists) AND authorization boundary is ABSENT
-      if ((hasResourceLookup || hasMutationOrTransfer) && (hasRouteParam || paramNames.length > 0) && !hasAuthBoundary) {
+      // Deterministic BOLA Candidate Evaluation.
+      //
+      // All four must hold:
+      //   1. this is an HTTP route handler (not a generic library function),
+      //   2. it reads an attacker-controllable request value,
+      //   3. that value actually flows into a resource lookup or mutation,
+      //   4. no authorization boundary guards it.
+      //
+      // Requiring 1 and 3 is what removes the false positives produced on
+      // ordinary library code, where any function with a parameter and a
+      // `get(`/`delete(` call used to be reported as BOLA.
+      const bolaPattern =
+        isRouteHandler &&
+        hasRouteParam &&
+        usesRequestValueInQuery &&
+        (hasResourceLookup || hasMutationOrTransfer) &&
+        !hasAuthBoundary;
+
+      if (bolaPattern) {
         matches.push({
           rule_id: 'INTENT-BOLA-001',
           rule_name: 'Broken Object Level Authorization (BOLA / IDOR)',
@@ -448,9 +493,18 @@ export class TreeSitterAnalysisService {
         });
       }
 
-      // Check for administrative access control pattern
-      const isAdminNamed = /(admin|emergency|pause|setFee|setOwner|withdrawAll)/i.test(fnName);
-      if (isAdminNamed && !hasAuthBoundary) {
+      // Administrative access control: the function name indicates a privileged
+      // operation AND it performs a real state-changing sink. Matching on the
+      // name alone flagged pure getters and unrelated helpers (e.g. a function
+      // merely named `getAdminConfig`), so a sink is now required.
+      const isAdminNamed = /\b(admin|emergency|pause|unpause|setFee|setOwner|withdrawAll|grantRole|revokeRole|mint|burn|upgrade)\b/i.test(fnName);
+      const hasStateChangingSink =
+        /(\.\s*(transfer|transferFrom|sendValue|withdraw|withdrawAll|burn|mint|selfdestruct|delegatecall)\s*\()/i.test(fnText) ||
+        /(\.\s*(balance|amount|owner|ownerId|fee|paused)\s*=[^=])/i.test(fnText) ||
+        /\b(selfdestruct|sstore|delegatecall)\b/i.test(fnText) ||
+        /\b(db|database|repository|collection|model|Model|store)\s*(\.\s*[a-zA-Z0-9_]+\s*)*\.\s*(deleteOne|deleteMany|updateOne|updateMany|update|save|remove|destroy)\s*\(/i.test(fnText);
+
+      if (isAdminNamed && hasStateChangingSink && !hasAuthBoundary) {
         matches.push({
           rule_id: 'RULE-ACCESS-001',
           rule_name: 'Missing Access Control on Sensitive Administrative Function',

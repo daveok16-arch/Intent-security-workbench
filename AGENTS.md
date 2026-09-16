@@ -39,11 +39,52 @@ dynamic verification via `ToolDetector.detectForge()`.
 ```bash
 npm install
 npm run lint        # tsc --noEmit
-npm test            # vitest run — 172 tests
+npm test            # vitest run
 npm run build       # vite build + esbuild bundle of server.ts
 npm run dev         # tsx server.ts (dev mode, Vite middleware mode)
 ./bin/intent --help # CLI (`intent` subcommands for programs/targets/scope/analyze/verify)
+
+./scripts/setup-tools.sh          # install missing analysis binaries
+./scripts/setup-tools.sh --check  # report only
+npx tsx tools/benchmark_precision.ts  # rule precision/recall benchmark
 ```
+
+## Engine precision
+
+The structural engine requires genuine HTTP route context *and* real data flow
+before reporting BOLA, so ordinary library code is not flagged. Measured with
+`tools/benchmark_precision.ts`: 100% precision, 100% recall over a labelled set of
+vulnerable route handlers and safe library code. Scanning the project's own
+`packages/` tree previously produced 45 HIGH findings, all false positives; it now
+produces 0. `tests/unit/rule_precision.test.ts` pins this in both directions.
+
+Optional engines (`angr`, `codeql`, `slither`, `foundry`, `clarinet`) are Phase 1/2
+placeholders: if their binary is present they return a structured `FAILED` result
+with `ENGINE_NOT_IMPLEMENTED`, and they never fabricate findings.
+`FoundryEngine` intentionally looks for `foundry` (a toolkit name with no such
+binary) and stays `NOT_INSTALLED`; real Forge/Anvil execution lives in Phase 5
+dynamic verification via `ToolDetector.detectForge()`.
+
+## Persistence
+
+Domain records (programs, targets, scope entries, investigations, findings,
+evidence metadata, verification results) persist to `storage/db/workbench-state.json`
+via a debounced, atomically-replaced snapshot, and are restored on startup. Set
+`PERSISTENCE_ENABLED=false` for fully ephemeral behaviour. Binary artifact content
+lives in the artifact storage layer, not in the snapshot.
+
+## Security posture
+
+Authentication is **off by default** for local single-user use. Set `AUTH_TOKEN`
+before binding to a network interface: without it, any client that can reach the
+port has full read/write access to research data and can trigger analysis
+execution. `ALLOWED_ORIGINS` adds a browser origin allowlist. Both are enforced
+globally for `/api` and for the `/ws` handshake, so a new route cannot bypass them.
+`/api/health`, `/api/readiness` and `/api/version` stay open for liveness probes.
+
+Query-string tokens (`?token=`) are accepted only on the WebSocket handshake, where
+browsers cannot set headers; on REST they are rejected so the token cannot leak via
+access logs, browser history or `Referer`.
 
 ## Running the server
 `API_PORT` / `API_HOST` are honored at `server.listen`. Default is 3000, but the sandbox proxy

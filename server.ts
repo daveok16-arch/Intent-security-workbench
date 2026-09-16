@@ -14,6 +14,12 @@ import { WebSocketServer, WebSocket } from 'ws';
 import { createServer as createViteServer } from 'vite';
 
 import { globalDB } from './apps/api/db_store.js';
+import {
+  resolveAuthConfig,
+  authorizeRequest,
+  extractToken,
+  isPublicPath,
+} from './apps/api/auth.js';
 import { globalJobOrchestrator } from './packages/orchestrator/src/index.js';
 import { globalEngineRegistry } from './engines/engine_registry.js';
 import { KNOWN_TAXONOMY } from './packages/vulnerability-intelligence/src/index.js';
@@ -57,6 +63,48 @@ const app = express();
 
 app.use(express.json({ limit: '10mb' }));
 
+// ---------------------------------------------------------------------------
+// Authentication and origin enforcement (global, so no route can bypass it).
+//
+// Disabled by default: with AUTH_TOKEN and ALLOWED_ORIGINS unset this is a
+// no-op, keeping local single-user use unchanged. Set AUTH_TOKEN before
+// exposing the port to a network.
+// ---------------------------------------------------------------------------
+const authConfig = resolveAuthConfig();
+
+if (authConfig.enforced) {
+  app.use((req, res, next) => {
+    if (!req.path.startsWith('/api')) return next();
+    // Health/readiness stay open so infrastructure can probe liveness.
+    if (isPublicPath(req.path)) return next();
+
+    const decision = authorizeRequest(
+      req.headers as Record<string, string | string[] | undefined>,
+      authConfig,
+      undefined,
+      { allowQueryToken: false }
+    );
+    if (!decision.ok) {
+      res.setHeader('WWW-Authenticate', 'Bearer');
+      return res.status(decision.status).json({ error: decision.error });
+    }
+    return next();
+  });
+
+  // Minimal CORS handling: only echo origins that passed the allowlist.
+  app.use((req, res, next) => {
+    const origin = req.headers.origin;
+    if (origin && authConfig.allowedOrigins.length > 0) {
+      res.setHeader('Access-Control-Allow-Origin', origin);
+      res.setHeader('Vary', 'Origin');
+      res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, PUT, DELETE, OPTIONS');
+    }
+    if (req.method === 'OPTIONS') return res.sendStatus(204);
+    return next();
+  });
+}
+
 // Process crash guards
 process.on('uncaughtException', (err) => {
   console.error('[CRITICAL] Uncaught exception:', err);
@@ -65,15 +113,50 @@ process.on('unhandledRejection', (reason) => {
   console.error('[CRITICAL] Unhandled promise rejection:', reason);
 });
 
+// Flush the durable snapshot on shutdown so the last mutations are not lost to
+// the debounce window.
+let shuttingDown = false;
+const flushAndExit = (signal: string) => {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  try {
+    globalDB.flushPersistence();
+    console.log(`[SHUTDOWN] Snapshot flushed on ${signal}.`);
+  } catch (err: any) {
+    console.error('[SHUTDOWN] Failed to flush snapshot:', err.message);
+  }
+  server.close(() => process.exit(0));
+  // Do not hang forever waiting on lingering sockets.
+  setTimeout(() => process.exit(0), 3000).unref();
+};
+
 // Create HTTP server
 const server = http.createServer(app);
+
+process.on('SIGINT', () => flushAndExit('SIGINT'));
+process.on('SIGTERM', () => flushAndExit('SIGTERM'));
 
 server.on('error', (err: any) => {
   console.error('[HTTP] Server error:', err);
 });
 
 // WebSocket Server attached for real-time telemetry
-const wss = new WebSocketServer({ server, path: '/ws' });
+const wss = new WebSocketServer({ server, path: '/ws', verifyClient: authConfig.enforced ? (info: any) => {
+  // The WebSocket stream carries the same events the REST API exposes, so it
+  // must honour the same auth. Browsers cannot set headers on a WS handshake,
+  // hence the token may also arrive as ?token=.
+  const url = new URL(info.req.url, 'http://localhost');
+  const decision = authorizeRequest(
+    info.req.headers as Record<string, string | string[] | undefined>,
+    authConfig,
+    url.searchParams.get('token'),
+    { allowQueryToken: true }
+  );
+  if (!decision.ok) {
+    console.warn(`[WebSocket] Rejected unauthorized upgrade: ${decision.error}`);
+  }
+  return decision.ok;
+} : undefined });
 const connectedClients = new Set<WebSocket>();
 
 wss.on('error', (err) => {

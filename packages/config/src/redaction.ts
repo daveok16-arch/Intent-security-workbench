@@ -26,6 +26,8 @@ const INLINE_SECRET_REGEXES = [
   /((?:postgres(?:ql)?|mysql|redis|mongodb):\/\/[^:\s\/]+:)([^@\s\/]+)(@[^\s\/]+)/gi,
   // Bearer tokens in strings
   /(Bearer\s+)[A-Za-z0-9_\-\.]{12,}/gi,
+  // Token passed as a query parameter, e.g. /ws?token=... or ?access_token=...
+  /([?&](?:token|access_token|auth_token|api_key|apikey)=)[^&\s'"]+/gi,
   // Generic API key prefixes (e.g., sk-..., AIza...)
   /\b(sk-[A-Za-z0-9_\-]{20,})\b/g,
   /\b(AIza[0-9A-Za-z\-_]{35})\b/g,
