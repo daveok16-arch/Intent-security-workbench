@@ -54,6 +54,71 @@ const EXTENSION_TO_LANGUAGE: Record<string, string> = {
   '.bash': 'bash',
 };
 
+/**
+ * Extracts the concrete evidence for a BOLA match from the function source.
+ *
+ * Reporting a fixed `req.params.id` / `db.getAccount(...)` for every hit would
+ * fabricate evidence: the finding would claim things the code does not contain.
+ * These helpers pull the real request value and the real call expression, and
+ * report empty strings when nothing specific can be identified.
+ */
+function extractBolaEvidence(
+  fnText: string,
+  requestInputPattern: string,
+  dataVerbPattern: string,
+  identifierNames: string[] = [],
+  allRequestNames: string[] = [],
+  contentNames: string[] = []
+): { requestValue: string; lookupCall: string; sinkCall: string } {
+  // 1. The attacker-controlled *object identifier* that reaches the data layer.
+  //    Preference order: the identifier-like bound name, then a direct
+  //    `req.params.x` access, then a destructured binding.
+  let requestValue = '';
+  if (identifierNames.length > 0) {
+    requestValue = identifierNames[0];
+  } else {
+    const direct = fnText.match(
+      new RegExp(`\\b(?:req|request)\\s*\\.\\s*(?:params|query|body)\\s*\\.\\s*[A-Za-z0-9_$]+`, 'i')
+    );
+    if (direct) {
+      requestValue = direct[0].replace(/\s+/g, '');
+    } else {
+      const destructured = fnText.match(
+        /\{\s*([A-Za-z0-9_$]+)[^}]*\}\s*=\s*(?:req|request)\s*\.\s*(?:params|query|body)/i
+      );
+      if (destructured) requestValue = destructured[1];
+    }
+  }
+
+  // 2. The data-layer call consuming it, e.g. `allocationsDAO.getByUserIdAndThreshold`.
+  let lookupCall = '';
+  let callMatch = null;
+  for (const name of identifierNames) {
+    callMatch = new RegExp(
+      `\\b[A-Za-z_$][A-Za-z0-9_$.]*\\s*\\.\\s*${dataVerbPattern}\\s*\\([^;]{0,200}\\b${name}\\b`,
+      'i'
+    ).exec(fnText);
+    if (callMatch) break;
+  }
+  if (!callMatch) {
+    callMatch = new RegExp(`\\b[A-Za-z_$][A-Za-z0-9_$.]*\\s*\\.\\s*${dataVerbPattern}`, 'i').exec(fnText);
+  }
+  if (callMatch) {
+    const raw = callMatch[0];
+    const paren = raw.indexOf('(');
+    lookupCall = (paren > 0 ? raw.slice(0, paren) : raw).replace(/\s+/g, '');
+  }
+
+  // 3. The mutation sink, when the match is destructive rather than a read.
+  let sinkCall = '';
+  const sink = fnText.match(
+    /\b[A-Za-z_$][A-Za-z0-9_$.]*\s*\.\s*(?:delete[A-Za-z0-9_]*|update[A-Za-z0-9_]*|remove|destroy|save|insert|create)\s*\(/i
+  );
+  if (sink) sinkCall = sink[0].replace(/\s+/g, '');
+
+  return { requestValue, lookupCall, sinkCall };
+}
+
 export class TreeSitterAnalysisService {
   private parserInitialized = false;
   private loadedLanguages: Map<string, any> = new Map();
@@ -408,40 +473,132 @@ export class TreeSitterAnalysisService {
       //
       // BOLA is an *HTTP request* defect: an attacker-supplied identifier from
       // the request is used to reach a resource without an ownership check.
-      // Requiring genuine request context is what keeps this rule from firing on
-      // ordinary library code, where `get(`/`delete(`/`add(` are ubiquitous.
+      //
+      // `req.session` is deliberately excluded: the session is server-side
+      // state, not attacker-controlled input, and treating it as a request
+      // parameter produced false positives on handlers that read the
+      // authenticated user's own id from the session.
       const hasRequestParam =
-        /(req|request)\.(params|query|body)\s*(\.|\[)/i.test(fnText) ||
-        /\bctx\.(params|query|body)\b/i.test(fnText) ||
-        /\bevent\.(pathParameters|queryStringParameters)\b/i.test(fnText);
+        /(req|request)\s*\.\s*(?:params|query|body)\s*(?:\.|\[|\}|\s*;|\s*\))/i.test(fnText) ||
+        /\bctx\s*\.\s*(?:params|query|body)\b/i.test(fnText) ||
+        /\bevent\s*\.\s*(?:pathParameters|queryStringParameters)\b/i.test(fnText);
       // Node/Express-style handler signature, e.g. (req, res) or (request, reply).
       const hasHandlerSignature = /\(\s*(req|request)\s*,\s*(res|reply|response)\b/.test(fnText);
       // Route registration: router.get('/x/:id', ...) / app.post(...).
       const hasRouteRegistration =
         /\b(router|app|server|api|route)\.(get|post|put|patch|delete|all|use)\s*\(\s*['"`]/i.test(fnText) ||
         /\b(router|app|server|api|route)\.(get|post|put|patch|delete|all|use)\s*\(/.test(fnText);
-      // Handler declared as a route callback: router.get('/x/:id', async (req,res) => ...)
+      // Handler methods used as Express callbacks declare `(req, res)` even when
+      // the route is registered elsewhere (NodeGoat registers
+      // `this.displayAllocations` in a separate router file while the handler
+      // body lives here), so a handler signature is itself sufficient context.
       const isRouteHandler = hasRouteRegistration || hasHandlerSignature;
       const hasRouteParam = hasRequestParam;
 
       // Resource lookup, anchored on data-access idioms rather than bare verbs.
-      const hasResourceLookup =
-        /\b(db|database|repository|repo|prisma|sequelize|knex|collection|model|Model|store)\s*(\.\s*[a-zA-Z0-9_]+\s*)*\.\s*(findOne|findById|findUnique|findFirst|findByPk|find|get|getById|getAccount|getUser|query|select)\s*\(/i.test(fnText) ||
-        /\b(Document|Order|Account|User|Resource|Invoice|Payment|Wallet|Vault|Profile)\s*\.\s*(findOne|findById|findUnique|findFirst|find|get|query)\s*\(/.test(fnText);
+      //
+      // The receiver must look like a data layer: literally db/database/etc., a
+      // name ending in a persistence-ish suffix (DAO, Repository, Model,
+      // Store, Service, Collection), or a capitalised model name. NodeGoat's
+      // `allocationsDAO.getByUserIdAndThreshold(...)` is a real instance of the
+      // suffix form.
+      const DATA_RECEIVER =
+        '(?:[A-Za-z_$][A-Za-z0-9_$]*(?:DAO|Dao|Repository|Repo|Model|Store|Service|Collection|Table|Entity|Db|DB)|' +
+        'db|database|repository|repo|prisma|sequelize|knex|collection|model|Model|store|' +
+        'Document|Order|Account|User|Resource|Invoice|Payment|Wallet|Vault|Profile|Transaction|Benefit|Allocation)';
+      // Separated verb classes. Conflating them caused false positives:
+      // treating `insert`/`create` as a *lookup* flagged NodeGoat's
+      // `memosDAO.insert(req.body.memo, ...)`, and treating them as a BOLA sink
+      // flagged it again — creating a record is not object-level authorization
+      // failure, which requires reaching an *existing* object by identifier.
+      const READ_VERB =
+        '(?:findOne|findById|findUnique|findFirst|findByPk|findAll|findBy[A-Za-z0-9_]*|find|' +
+        'getBy[A-Za-z0-9_]*|getOne|getById|getAll[A-Za-z0-9_]*|get|query|select|aggregate)';
+      const MUTATE_VERB =
+        '(?:deleteOne|deleteMany|deleteById|deleteBy[A-Za-z0-9_]*|delete|' +
+        'updateOne|updateMany|updateBy[A-Za-z0-9_]*|update|remove|destroy)';
+      const DATA_VERB = `(?:${READ_VERB}|${MUTATE_VERB})`;
 
-      // Sensitive sink: a mutation, transfer, or destructive operation on data.
+      const resourceLookupRe = new RegExp(
+        `\\b${DATA_RECEIVER}\\s*(?:\\.\\s*[A-Za-z0-9_$]+\\s*)*\\.\\s*${READ_VERB}\\s*\\(`,
+        'i'
+      );
+      const hasResourceLookup = resourceLookupRe.test(fnText);
+
+      // Sensitive sink: a mutation, transfer, or destructive operation.
+      //
+      // Create-only verbs are excluded: creating a new record is not object-level
+      // authorization failure, which requires an *existing* object to be reached
+      // through an attacker-supplied identifier. Treating `insert`/`create` as a
+      // BOLA sink flagged NodeGoat's `memosDAO.insert(req.body.memo, ...)`.
+      const mutationRe = new RegExp(
+        `\\b${DATA_RECEIVER}\\s*(?:\\.\\s*[A-Za-z0-9_$]+\\s*)*\\.\\s*(?:deleteOne|deleteMany|deleteById|deleteBy[A-Za-z0-9_]*|delete|updateOne|updateMany|updateBy[A-Za-z0-9_]*|update|remove|destroy)\\s*\\(`,
+        'i'
+      );
       const hasMutationOrTransfer =
-        /\b(db|database|repository|repo|prisma|sequelize|knex|collection|model|Model|store)\s*(\.\s*[a-zA-Z0-9_]+\s*)*\.\s*(deleteOne|deleteMany|deleteById|updateOne|updateMany|update|save|insert|insertOne|remove|destroy)\s*\(/i.test(fnText) ||
+        mutationRe.test(fnText) ||
         /\.\s*(transfer|transferFrom|sendValue|withdraw|withdrawAll|burn|mint)\s*\(/.test(fnText) ||
         /\.\s*(balance|amount|owner|ownerId)\s*=[^=]/.test(fnText);
 
-      // The request-supplied identifier must actually flow into the lookup or
-      // mutation, otherwise this is an unrelated function that merely happens to
-      // reference request data.
+      // Does an attacker-controllable request value reach the lookup/mutation?
+      //
+      // Three real shapes, all present in the wild:
+      //   1. inline:        db.users.findOne({ id: req.params.id })
+      //   2. via assignment: const id = req.params.id
+      //   3. destructured:   const { userId } = req.params   <- NodeGoat
+      //
+      // Only params/query/body count. `req.session` is server-side state.
+      const REQ_INPUT = '(?:req|request)\\s*\\.\\s*(?:params|query|body)';
+      // Destructured binding: `const { userId } = req.params;`
+      const destructuredReq = new RegExp(
+        `\\b(?:const|let|var)\\s*\\{\\s*([A-Za-z0-9_$]+)[^}]*\\}\\s*=\\s*${REQ_INPUT}\\b`,
+        'i'
+      ).exec(fnText);
+      const directReq = new RegExp(`\\b(?:const|let|var)\\s+([A-Za-z0-9_$]+)\\s*=\\s*${REQ_INPUT}\\b`, 'i').exec(fnText);
+      // Names actually bound from params/query/body in this function only. A
+      // match is only valid when one of these names is passed to the data layer,
+      // which stops unrelated request fields (a memo body, a username) from
+      // being treated as an object identifier.
+      const requestBoundNames: string[] = [];
+      if (directReq) requestBoundNames.push(directReq[1]);
+      if (destructuredReq) {
+        const inner = destructuredReq[1];
+        if (!requestBoundNames.includes(inner)) requestBoundNames.push(inner);
+      }
+      const hasRequestValueBinding = requestBoundNames.length > 0;
+      const hasInlineRequestArg = new RegExp(
+        `${DATA_VERB}\\s*\\(\\s*\\{?[^)]{0,160}${REQ_INPUT}`,
+        'is'
+      ).test(fnText);
+
+      // Does the data-layer call actually receive the request-derived value?
+      // `allocationsDAO.getByUserIdAndThreshold(userId, threshold, cb)` does;
+      // `userDAO.validateLogin(userName, password, cb)` does not constitute an
+      // object-level authorization defect even though userName is request input.
+      const requestValuesInDataCall = requestBoundNames.filter((name) =>
+        new RegExp(
+          `\\b[A-Za-z_$][A-Za-z0-9_$.]*\\s*\\.\\s*${DATA_VERB}\\s*\\(\\s*[^;]{0,200}\\b${name}\\b`,
+          'i'
+        ).test(fnText)
+      );
+
+      // Only object-identifier-ish names count. A value that is clearly content
+      // (a memo body, a comment) or a credential (password, username) is not an
+      // object reference, and flagging it produces a false positive.
+      const IDENTIFIERISH = /(^|_)(id|ids|uuid|guid|key|ref|reference|owner|userId|accountId|orderId|docId|documentId|resourceId|profileId|recordId|itemId)(_|$)/i;
+      const CONTENTISH = /(password|passwd|secret|token|memo|comment|message|body|content|text|note|title|description|name|email|username|userName|firstName|lastName)/i;
+      const identifierLike = requestValuesInDataCall.filter(
+        (n) => IDENTIFIERISH.test(n) || (!CONTENTISH.test(n) && /id|key|ref|owner/i.test(n))
+      );
+      const contentOnly = requestValuesInDataCall.filter((n) => CONTENTISH.test(n) && !IDENTIFIERISH.test(n));
+
       const usesRequestValueInQuery =
-        /(findOne|findById|findUnique|findFirst|find|get|getById|query|select|deleteOne|deleteMany|updateOne|updateMany|update|save|remove|destroy)\s*\(\s*\{?[^)]{0,120}(req|request)\.(params|query|body)/is.test(fnText) ||
-        /\b(const|let|var)\s+([a-zA-Z0-9_]+)\s*=\s*(req|request)\.(params|query|body)\b/i.test(fnText) ||
-        /\b(ctx|event)\.(params|query|body|pathParameters)\b/i.test(fnText);
+        hasInlineRequestArg ||
+        (requestValuesInDataCall.length > 0 && identifierLike.length > 0) ||
+        /\b(?:ctx|event)\s*\.\s*(?:params|query|body|pathParameters)\b/i.test(fnText);
+
+      // Extract the actual evidence from the source rather than assuming it.
+      const extracted = extractBolaEvidence(fnText, REQ_INPUT, DATA_VERB, identifierLike, requestValuesInDataCall, contentOnly);
 
       // Check for explicit authorization boundary / identity comparison
       const hasAuthBoundary = /assert\s*\(\s*.*(==|===|!=|!==).*\)/i.test(fnText) ||
@@ -482,13 +639,19 @@ export class TreeSitterAnalysisService {
           is_state_mutation: Boolean(hasMutationOrTransfer),
           is_sink: true,
           sink_name: hasMutationOrTransfer ? 'mutation / delete' : 'resource lookup',
-          resource_identifier: hasRouteParam ? 'req.params.id' : (paramNames[0] || 'id'),
+          // Extracted from the real source, never assumed. Reporting a
+          // hardcoded `req.params.id` / `db.getAccount(...)` for every finding
+          // would fabricate evidence regardless of what the code actually does.
+          resource_identifier: extracted.requestValue,
           details: {
             parameters: paramNames,
             has_route_param: hasRouteParam,
             has_resource_lookup: hasResourceLookup,
             has_mutation_or_transfer: hasMutationOrTransfer,
             has_auth_boundary: false,
+            matched_request_value: extracted.requestValue,
+            matched_lookup_call: extracted.lookupCall,
+            matched_sink_call: extracted.sinkCall,
           },
         });
       }
@@ -527,7 +690,28 @@ export class TreeSitterAnalysisService {
       }
     }
 
-    return matches;
+    // A nested function that itself matches (an arrow handler inside a constructor
+// or module-level function) produces a second finding covering a wider range.
+// Keep only the most specific match: when one match's line range is contained
+// within another's, the inner (narrower) one is the real handler.
+    const sorted = [...matches].sort(
+      (a, b) => (a.line_end - a.line_start) - (b.line_end - b.line_start)
+    );
+    const kept: TreeSitterStructuralMatch[] = [];
+    for (const m of sorted) {
+      // Narrower matches are processed first, so a kept match that this one
+      // contains means this match is the outer (enclosing) function.
+      const containsKept = kept.some(
+        (k) =>
+          k.rule_id === m.rule_id &&
+          m.line_start <= k.line_start &&
+          m.line_end >= k.line_end &&
+          (k.resource_identifier || '') === (m.resource_identifier || '')
+      );
+      if (!containsKept) kept.push(m);
+    }
+
+    return kept;
   }
 
   /**
@@ -578,9 +762,9 @@ export class TreeSitterAnalysisService {
         column_end: match.column_end,
         matched_code: match.matched_snippet,
         data_flow: {
-          source: match.resource_identifier || 'external parameter',
-          flow: ['function input', 'resource lookup', 'sensitive sink'],
-          object: match.resource_identifier ? `db.getAccount(${match.resource_identifier})` : undefined,
+          source: match.resource_identifier || 'request input',
+          flow: ['request input', match.details?.matched_lookup_call || 'resource lookup', 'sensitive sink'],
+          object: match.details?.matched_lookup_call || undefined,
           authorization: match.has_authorization_boundary ? 'VERIFIED' : 'MISSING',
           sink: match.sink_name,
         },
@@ -720,9 +904,9 @@ export class TreeSitterAnalysisService {
           column_end: match.column_end,
           matched_code: match.matched_snippet,
           data_flow: {
-            source: match.resource_identifier || 'external parameter',
-            flow: ['function input', 'resource lookup', 'sensitive sink'],
-            object: match.resource_identifier ? `db.getAccount(${match.resource_identifier})` : undefined,
+            source: match.resource_identifier || 'request input',
+            flow: ['request input', match.details?.matched_lookup_call || 'resource lookup', 'sensitive sink'],
+            object: match.details?.matched_lookup_call || undefined,
             authorization: match.has_authorization_boundary ? 'VERIFIED' : 'MISSING',
             sink: match.sink_name,
           },
