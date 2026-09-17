@@ -22,6 +22,24 @@ import {
   CompiledScopeAsset,
   CompiledSuggestedTarget,
 } from '../types.js';
+import { globalDB } from '../../../../apps/api/db_store.js';
+
+/**
+ * Engine id -> the operation that engine actually implements. Only engines with
+ * a real executor appear here, so the planner never schedules a job a
+ * placeholder cannot honour.
+ */
+const ANALYSIS_ENGINE_OPERATIONS: Record<string, string> = {
+  treesitter: 'structural_scan',
+  semgrep: 'ast_rule_scan',
+  slither: 'solidity_static_analysis',
+  codeql: 'semantic_analysis',
+  spectral: 'openapi_lint',
+  z3: 'smt_check',
+  angr: 'binary_analysis',
+  clarinet: 'clarity_check',
+  foundry: 'forge_test',
+};
 
 export class DeterministicProvider implements LLMProvider {
   public readonly id = 'deterministic';
@@ -314,24 +332,32 @@ export class DeterministicProvider implements LLMProvider {
       case ResearchPhase.ANALYSIS_PLANNING: {
         explanation = 'Analysis plan formulated. Submitting static analysis and AST inspection jobs to orchestrator.';
         const targetId = context.target?.id;
-        const invId = context.program?.id ? `inv-${context.program.id}` : 'inv-active';
+        // Must be the investigation this run belongs to; a program-derived id
+        // would orphan queued jobs from the real investigation record.
+        const invId = context.investigation_id;
+        if (!invId) {
+          decisions.push('Cannot schedule analysis jobs: no investigation context available.');
+          nextPhase = ResearchPhase.ANALYSIS_EXECUTION;
+          break;
+        }
 
         const applicable = context.capability_matrix.filter(c => c.status === 'APPLICABLE');
         for (const eng of applicable) {
-          if (eng.engine_id === 'slither' || eng.engine_id === 'semgrep' || eng.engine_id === 'treesitter') {
+          if (ANALYSIS_ENGINE_OPERATIONS[eng.engine_id]) {
             suggestedToolCalls.push({
               tool: 'createAnalysisJob',
               parameters: {
                 investigation_id: invId,
                 target_id: targetId,
                 engine_id: eng.engine_id,
-                operation: eng.engine_id === 'treesitter' ? 'ast_rule_scan' : 'standard_scan',
+                operation: ANALYSIS_ENGINE_OPERATIONS[eng.engine_id],
+                parameters: { ...(context.analysis_parameters || {}) },
               },
-              rationale: `Execute static rule analysis using ${eng.name}.`,
+              rationale: `Execute analysis using ${eng.name}.`,
             });
           }
         }
-        decisions.push('Scheduled automated static analysis jobs.');
+        decisions.push('Scheduled automated analysis jobs.');
         nextPhase = ResearchPhase.ANALYSIS_EXECUTION;
         break;
       }
@@ -363,10 +389,53 @@ export class DeterministicProvider implements LLMProvider {
         nextPhase = ResearchPhase.VERIFICATION_REQUESTED;
         break;
 
-      case ResearchPhase.VERIFICATION_REQUESTED:
-        explanation = 'Verification requested. Awaiting dynamic execution authorization or formal proof dispatch.';
-        decisions.push('Controller awaiting dynamic verification authorization.');
+      case ResearchPhase.VERIFICATION_REQUESTED: {
+        // Dispatch a verification request for the strongest candidate. The
+        // PolicyGate answers APPROVAL_REQUIRED for dynamic verification, which
+        // pauses the controller at the human approval gate; there is no silent
+        // auto-advance past it.
+        const candidates = globalDB
+          .listFindings(context.investigation_id)
+          .filter(f => f.status === 'CANDIDATE');
+
+        if (candidates.length === 0) {
+          explanation = 'Verification requested but no candidate findings are available to verify.';
+          decisions.push('No candidate findings require verification.');
+          nextPhase = ResearchPhase.REPORT_PREPARATION;
+          break;
+        }
+
+        // Only dispatch for a candidate that has no verification result yet,
+        // otherwise every step would spawn another identical dynamic run.
+        const verifiedCandidateIds = new Set(
+          globalDB
+            .listDynamicVerificationJobs(context.investigation_id)
+            .map(j => j.candidate_id)
+            .filter(Boolean)
+        );
+        const pendingCandidate = candidates.find(c => !verifiedCandidateIds.has(c.id));
+
+        if (!pendingCandidate) {
+          explanation = 'All candidate findings have a verification result recorded.';
+          decisions.push('Verification complete for all candidates.');
+          nextPhase = ResearchPhase.REPORT_PREPARATION;
+          break;
+        }
+
+        explanation = `Verification requested for candidate '${pendingCandidate.title}'. Awaiting researcher authorization for dynamic reproduction.`;
+        suggestedToolCalls.push({
+          tool: 'requestVerification',
+          parameters: {
+            candidate_id: pendingCandidate.id,
+            verification_type: 'DYNAMIC',
+            operation: 'run_forge_exploit',
+            parameters: {},
+          },
+          rationale: 'Dispatch the strongest candidate for dynamic reproduction under researcher authorization.',
+        });
+        decisions.push(`Requested dynamic verification for candidate ${pendingCandidate.id}.`);
         break;
+      }
 
       default:
         explanation = `Controller currently in phase ${phase}.`;

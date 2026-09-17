@@ -117,7 +117,18 @@ State invariants worth knowing:
 - `PolicyGate` blocks: unregistered targets, OUT_OF_SCOPE targets, sandbox violations,
   and sensitive actions (dynamic verification, fork creation) until `has_user_approval`.
 - Jobs dispatched by the controller must carry the controller's `investigation_id`; the
-  controller adopts the store-assigned id on auto-create so these agree.
+  controller adopts the store-assigned id on auto-create so these agree, and the planner
+  reads it from the reasoning context rather than deriving `inv-<program_id>`.
+- `createAnalysisJob` only *enqueues*. `AISecurityController.executeScheduledJobs()` is what
+  calls `runJob`, mirrors artifacts into the DB, records an EXECUTION fact per job, and
+  re-parses the persisted stdout to persist engine findings as CANDIDATE findings. Without
+  that step a hunt silently stalls in QUEUED while the phase machine advances.
+- Approvals are keyed per resource (`verify-<candidate_id>`, `poc-<candidate_id>`,
+  `job-<engine_id>`), because that is the key the tool passes to `ctx.is_approved`.
+  `UserApprovalRequest.approval_key` must carry that exact key or approving never opens
+  the gate. Duplicate pending requests for the same key are suppressed.
+- The controller dispatches one verification per candidate and skips any candidate that
+  already has a dynamic-verification job, then advances to REPORT_PREPARATION.
 
 ## Engine implementations
 

@@ -162,6 +162,12 @@ export interface UserApprovalRequest {
   created_at: string;
   resolved_at?: string;
   resolution_reason?: string;
+  /**
+   * The exact key the tool passes to `ctx.is_approved(...)`. Tools scope
+   * approval per-resource (e.g. `verify-<candidate_id>`), so approving must
+   * grant that key rather than the bare tool name, or the gate never opens.
+   */
+  approval_key?: string;
 }
 
 export interface CapabilityMatrixEntry {

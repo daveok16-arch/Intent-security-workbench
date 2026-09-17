@@ -16,6 +16,42 @@ import {
   EngineArtifact,
 } from '../types.js';
 import { globalSemgrepService, SemgrepAnalysisService } from '../../packages/static-analysis/src/semgrep_service.js';
+import { globalSecurityRuleRegistry } from '../../packages/static-analysis/src/rule_registry.js';
+
+/** Semgrep's own finding levels, mapped onto platform severity. */
+function mapSemgrepSeverity(level: string | undefined): string {
+  switch ((level || '').toUpperCase()) {
+    case 'ERROR':
+      return 'HIGH';
+    case 'WARNING':
+      return 'MEDIUM';
+    case 'INFO':
+      return 'LOW';
+    default:
+      return 'MEDIUM';
+  }
+}
+
+/**
+ * Resolves a rule definition for a Semgrep check id. The generated rule pack
+ * lives in a temp directory, so Semgrep namespaces every check as
+ * `tmp.intent-semgrep-<rand>.<RULE_ID>`. Try the exact id first, then the
+ * trailing segment, so metadata is not silently lost.
+ */
+function lookupRule(checkId: string) {
+  if (!checkId) return undefined;
+  const direct = globalSecurityRuleRegistry.get(checkId);
+  if (direct) return direct;
+  const segments = checkId.split('.');
+  for (let i = segments.length - 1; i >= 0; i--) {
+    const candidate = segments.slice(i).join('.');
+    const found = globalSecurityRuleRegistry.get(candidate);
+    if (found) return found;
+    const single = globalSecurityRuleRegistry.get(segments[i]);
+    if (single) return single;
+  }
+  return undefined;
+}
 
 export class SemgrepEngine extends BaseEngine {
   readonly engine_id = 'semgrep';
@@ -192,17 +228,24 @@ export class SemgrepEngine extends BaseEngine {
       if (!rawOutput.stdout) return [];
       const parsed = JSON.parse(rawOutput.stdout);
       const results = parsed.results || [];
-      return results.map((r: any, idx: number) => ({
-        id: `sg-find-${idx}`,
-        title: r.check_id,
-        description: r.extra?.message || '',
-        severity: r.extra?.severity || 'HIGH',
-        category: 'STATIC_ANALYSIS',
-        file: r.path,
-        line_start: r.start?.line,
-        line_end: r.end?.line,
-        evidence: r.extra?.lines,
-      }));
+      return results.map((r: any, idx: number) => {
+        const rule = lookupRule(r.check_id);
+        return {
+          id: `sg-find-${idx}`,
+          title: r.check_id,
+          description: r.extra?.message || '',
+          // Semgrep reports its own WARNING/ERROR levels; map onto platform
+          // severity rather than leaking a non-platform value through.
+          severity: rule?.severity || mapSemgrepSeverity(r.extra?.severity),
+          category: 'STATIC_ANALYSIS',
+          cwe: rule?.cwe_ids || [],
+          confidence: rule?.confidence || 'MEDIUM',
+          file: r.path,
+          line_start: r.start?.line,
+          line_end: r.end?.line,
+          evidence: r.extra?.lines,
+        };
+      });
     } catch {
       return [];
     }

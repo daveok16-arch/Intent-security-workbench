@@ -18,6 +18,17 @@ export interface AIReasoningContext {
   phase: ResearchPhase;
   program?: any;
   target?: any;
+  /**
+   * The investigation this reasoning belongs to. Tools that write records
+   * (notably createAnalysisJob) must target this id; deriving one from the
+   * program would orphan the result from the real investigation.
+   */
+  investigation_id?: string;
+  /**
+   * Extra parameters merged into every scheduled analysis job, so engines are
+   * pointed at the real source tree (source_directory/target_directory/etc.).
+   */
+  analysis_parameters?: Record<string, any>;
   facts: ResearchFact[];
   hypotheses: ResearchHypothesis[];
   unknowns: ResearchUnknown[];

@@ -9,7 +9,10 @@
  *    and graceful degradation when AI keys are absent.
  */
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import * as fs from 'fs';
+import * as path from 'path';
+import { execFileSync } from 'child_process';
 import {
   globalToolRegistry,
   AISecurityController,
@@ -21,7 +24,8 @@ import {
   UserApprovalRequest,
 } from '../../packages/agent-runtime/src/index.js';
 import { globalDB } from '../../apps/api/db_store.js';
-import { TargetType, ScopeInclusionStatus, ScopeAssetType, Ecosystem, BountyPlatform, ProgramStatus } from '../../packages/core/src/index.js';
+import { globalJobOrchestrator } from '../../packages/orchestrator/src/index.js';
+import { TargetType, ScopeInclusionStatus, ScopeAssetType, Ecosystem, BountyPlatform, ProgramStatus, Severity, FindingStatus } from '../../packages/core/src/index.js';
 
 describe('Phase 6 — AI Security Control Plane Core', () => {
   let controller: AISecurityController;
@@ -415,5 +419,191 @@ describe('Phase 6 — AI Security Control Plane Core', () => {
       expect(state.investigation_id).toBe(investigation.id);
       expect(globalDB.getInvestigation(investigation.id)).toBeDefined();
     });
+  });
+
+  describe('Live hunt loop', () => {
+    // These tests build a real local git repository containing a BOLA-vulnerable
+    // handler, so acquisition, scheduling and job execution all run for real.
+    // Without a reachable repository the loop would stop at acquisition and the
+    // assertions below would pass vacuously.
+    let repoDir: string;
+
+    const seedVulnerableRepo = (): string => {
+      const dir = path.join(process.cwd(), '.test_fixtures', `ai_hunt_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`);
+      fs.mkdirSync(dir, { recursive: true });
+      execFileSync('git', ['init'], { cwd: dir });
+      execFileSync('git', ['config', 'user.name', 'Workbench Test'], { cwd: dir });
+      execFileSync('git', ['config', 'user.email', 'test@workbench.internal'], { cwd: dir });
+      fs.writeFileSync(
+        path.join(dir, 'api.js'),
+        [
+          "const express = require('express');",
+          'const router = express.Router();',
+          '// BOLA: no ownership check between document and requester',
+          "router.get('/documents/:id', async (req, res) => {",
+          '  const doc = await db.documents.findOne({ _id: req.params.id });',
+          '  return res.json(doc);',
+          '});',
+          'module.exports = router;',
+        ].join('\n')
+      );
+      execFileSync('git', ['add', '-A'], { cwd: dir });
+      execFileSync('git', ['commit', '-m', 'vulnerable handlers'], { cwd: dir });
+      return dir;
+    };
+
+    const seedProgramTargetInvestigation = (label: string) => {
+      const program = globalDB.createProgram({
+        name: `${label} Program`,
+        platform: BountyPlatform.CUSTOM,
+        external_identifier: `slug-${label}`,
+        scope: [repoDir],
+        metadata: {},
+      });
+      const target = globalDB.createTarget({
+        program_id: program.id,
+        name: `${label}-target`,
+        target_type: TargetType.REPOSITORY,
+        ecosystem: Ecosystem.WEB_API,
+        repository_url: repoDir,
+        metadata: {},
+      });
+      const investigation = globalDB.createInvestigation({
+        program_id: program.id,
+        target_id: target.id,
+        title: `${label} investigation`,
+        description: label,
+      });
+      return { program, target, investigation };
+    };
+
+    beforeEach(() => {
+      repoDir = seedVulnerableRepo();
+    });
+
+    afterEach(() => {
+      try {
+        fs.rmSync(repoDir, { recursive: true, force: true });
+      } catch {
+        /* best-effort */
+      }
+    });
+
+    it('schedules analysis jobs against the real investigation, not a program-derived id', async () => {
+      // Regression: the planner derived `inv-<program_id>`, orphaning every job.
+      const { program, target, investigation } = seedProgramTargetInvestigation('job-id');
+
+      await controller.executeObjective({
+        objective: 'Hunt broken object level authorization in REST handlers',
+        investigation_id: investigation.id,
+        program_id: program.id,
+        target_id: target.id,
+        auto_advance: true,
+        max_steps: 14,
+      });
+
+      const jobs = globalJobOrchestrator.listJobs({ investigation_id: investigation.id });
+      expect(jobs.length).toBeGreaterThan(0);
+
+      for (const job of jobs) {
+        expect(job.investigation_id).toBe(investigation.id);
+        expect(job.investigation_id).not.toBe(`inv-${program.id}`);
+      }
+
+      // Jobs must not be left stranded in QUEUED.
+      expect(jobs.filter(j => j.status === 'QUEUED')).toHaveLength(0);
+    }, 180000);
+
+    it('executes scheduled jobs and records the real outcome as a verified fact', async () => {
+      const { program, target, investigation } = seedProgramTargetInvestigation('facts');
+
+      const state = await controller.executeObjective({
+        objective: 'Hunt broken object level authorization in REST handlers',
+        investigation_id: investigation.id,
+        program_id: program.id,
+        target_id: target.id,
+        auto_advance: true,
+        max_steps: 14,
+      });
+
+      const jobs = globalJobOrchestrator.listJobs({ investigation_id: investigation.id });
+      expect(jobs.length).toBeGreaterThan(0);
+
+      const executionFacts = state.facts.filter(f => f.category === 'EXECUTION');
+      expect(executionFacts.length).toBeGreaterThan(0);
+      expect(executionFacts[0].statement).toContain('exit code');
+    }, 180000);
+
+    it('surfaces engine findings as CANDIDATE findings with evidence attached', async () => {
+      const { program, target, investigation } = seedProgramTargetInvestigation('candidates');
+
+      await controller.executeObjective({
+        objective: 'Hunt broken object level authorization in REST handlers',
+        investigation_id: investigation.id,
+        program_id: program.id,
+        target_id: target.id,
+        auto_advance: true,
+        max_steps: 14,
+      });
+
+      const findings = globalDB.listFindings(investigation.id);
+      expect(findings.length).toBeGreaterThan(0);
+
+      for (const finding of findings) {
+        // A static hit is a lead, never a confirmed vulnerability.
+        expect(finding.status).toBe(FindingStatus.CANDIDATE);
+        expect(finding.investigation_id).toBe(investigation.id);
+      }
+
+      // Every finding must cite machine-verifiable evidence.
+      expect(findings.some(f => f.evidence_artifact_ids.length > 0)).toBe(true);
+    }, 180000);
+
+    it('scopes the approval key to the resource the tool gates on', async () => {
+      // Regression: the controller granted the bare tool name while the tool
+      // checked `verify-<candidate_id>`, so approval never opened the gate.
+      const { program, target, investigation } = seedProgramTargetInvestigation('approvalkey');
+
+      const state = await controller.executeObjective({
+        objective: 'Hunt broken object level authorization in REST handlers',
+        investigation_id: investigation.id,
+        program_id: program.id,
+        target_id: target.id,
+        auto_advance: true,
+        max_steps: 16,
+      });
+
+      const pending = state.approvals.filter(a => a.status === 'PENDING');
+      expect(pending.length).toBeGreaterThan(0);
+
+      for (const req of pending) {
+        expect(req.approval_key).toBeTruthy();
+        // The gate is keyed per resource, never on the bare tool name.
+        expect(req.approval_key).not.toBe(req.action);
+      }
+
+      // Approving must actually mark the request resolved.
+      const first = pending[0];
+      const after = await controller.approveAction(investigation.id, first.id, true, 'authorized');
+      expect(after.approvals.find(a => a.id === first.id)!.status).toBe('APPROVED');
+    }, 180000);
+
+    it('does not stack duplicate approval requests for the same resource', async () => {
+      const { program, target, investigation } = seedProgramTargetInvestigation('dedup');
+
+      await controller.executeObjective({
+        objective: 'Hunt broken object level authorization in REST handlers',
+        investigation_id: investigation.id,
+        program_id: program.id,
+        target_id: target.id,
+        auto_advance: true,
+        max_steps: 16,
+      });
+
+      const state = controller.getState(investigation.id)!;
+      const pending = state.approvals.filter(a => a.status === 'PENDING');
+      const keys = pending.map(a => a.approval_key || a.action);
+      expect(new Set(keys).size).toBe(keys.length);
+    }, 180000);
   });
 });

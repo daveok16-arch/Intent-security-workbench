@@ -11,6 +11,9 @@
 
 import { globalDB } from '../../../apps/api/db_store.js';
 import { globalJobOrchestrator } from '../../orchestrator/src/index.js';
+import { globalEngineRegistry } from '../../../engines/engine_registry.js';
+import type { AnalysisJob } from '../../core/src/index.js';
+import type { EngineFinding } from '../../../engines/types.js';
 import {
   ControllerState,
   ResearchPhase,
@@ -31,6 +34,24 @@ import { globalToolRegistry } from './tools/tool_registry.js';
 import { globalAIProviderClient } from './ai_provider_client.js';
 
 export type EventListener = (event: { type: ControllerEventType | string; data: any; timestamp: string }) => void;
+
+/**
+ * Mirrors the approval key each tool passes to `ctx.is_approved(...)`, so an
+ * approved request actually opens the gate the tool consults. Tools scope
+ * approval per resource rather than per tool name.
+ */
+function deriveApprovalKey(tool: string, params: Record<string, any>): string {
+  switch (tool) {
+    case 'requestVerification':
+      return `verify-${params?.candidate_id ?? ''}`;
+    case 'executeFoundryPoC':
+      return `poc-${params?.candidate_id ?? ''}`;
+    case 'createAnalysisJob':
+      return `job-${params?.engine_id ?? ''}`;
+    default:
+      return tool;
+  }
+}
 
 export class AISecurityController {
   private states: Map<string, ControllerState> = new Map();
@@ -107,6 +128,7 @@ export class AISecurityController {
     target_id?: string;
     investigation_id?: string;
     auto_advance?: boolean;
+    max_steps?: number;
   }): Promise<ControllerState> {
     const requestedId = params.investigation_id || `inv-ai-${Date.now()}`;
     let state = this.states.get(requestedId);
@@ -233,9 +255,11 @@ export class AISecurityController {
     }
 
     if (params.auto_advance) {
-      // Step until paused, blocked, or completed
+      // Step until paused, blocked, or completed. The plan has 7 stages but the
+      // phase graph interleaves verification stages, so the cap must allow a
+      // full pass through analysis, correlation and verification readiness.
       let iterations = 0;
-      const maxIterations = 8;
+      const maxIterations = params.max_steps ?? 20;
       while (
         iterations < maxIterations &&
         state.current_phase !== ResearchPhase.BLOCKED &&
@@ -277,6 +301,8 @@ export class AISecurityController {
       phase: state.current_phase,
       program,
       target,
+      investigation_id: state.investigation_id,
+      analysis_parameters: this.buildAnalysisParameters(state, target),
       facts: state.facts,
       hypotheses: state.hypotheses,
       unknowns: state.unknowns,
@@ -427,6 +453,35 @@ export class AISecurityController {
       } else {
         // Handle failure
         if (result.code === 'APPROVAL_REQUIRED' || result.error?.includes('requires explicit researcher approval')) {
+          const approvalKey = deriveApprovalKey(call.tool, call.parameters);
+
+          // Do not stack duplicate requests for the same action: if one is
+          // already pending, wait on it; if it was already granted, retry once.
+          const existing = state.approvals.find(
+            a => (a.approval_key || a.action) === approvalKey && a.status === 'PENDING'
+          );
+          if (existing) {
+            state.current_phase = ResearchPhase.BLOCKED;
+            state.current_activity = `Waiting for researcher approval on action: ${existing.action}`;
+            return state;
+          }
+
+          if (this.approvedActions.has(`${investigation_id}:${approvalKey}`)) {
+            // Approval already granted but the tool still refused: surface it
+            // rather than looping forever.
+            state.blockers.push({
+              id: `block-approval-${Date.now()}`,
+              phase: state.current_phase,
+              code: 'APPROVAL_GRANTED_BUT_REFUSED',
+              message: `Action '${call.tool}' refused despite an approved authorization (${approvalKey}).`,
+              resolution_hint: 'Inspect the tool error; the approval key may not match the gate check.',
+              timestamp: new Date().toISOString(),
+            });
+            state.current_phase = ResearchPhase.BLOCKED;
+            state.current_activity = `Blocked: approval granted but '${call.tool}' still refused.`;
+            return state;
+          }
+
           const approvalReq: UserApprovalRequest = {
             id: `appr-${Date.now()}`,
             action: call.tool,
@@ -436,6 +491,8 @@ export class AISecurityController {
             required_policy_check: 'RESEARCHER_APPROVAL',
             status: 'PENDING',
             created_at: new Date().toISOString(),
+            // Tools scope approval per resource; derive the same key they check.
+            approval_key: approvalKey,
           };
           state.approvals.push(approvalReq);
           state.current_phase = ResearchPhase.BLOCKED;
@@ -457,6 +514,20 @@ export class AISecurityController {
         state.current_activity = `Blocked: ${blocker.message}`;
         this.emitEvent(ControllerEventType.ACTION_BLOCKED, { investigation_id, blocker });
         return state;
+      }
+    }
+
+    // Execute scheduled analysis jobs. The tools only enqueue a job; without
+    // this step nothing ever calls runJob, so every analysis stalled in QUEUED
+    // and the controller advanced as if the work had completed.
+    if (state.active_jobs.length > 0) {
+      const drained = await this.executeScheduledJobs(state);
+      if (drained > 0) {
+        state.current_activity = `Executed ${drained} scheduled analysis job(s); collecting findings.`;
+        this.emitEvent(ControllerEventType.ANALYSIS_COMPLETED, {
+          investigation_id,
+          jobs_executed: drained,
+        });
       }
     }
 
@@ -513,6 +584,8 @@ export class AISecurityController {
     req.resolution_reason = reason || (approved ? 'Authorized by researcher.' : 'Rejected by researcher.');
 
     if (approved) {
+      // Grant the exact key the tool consults, not just the tool name.
+      this.approvedActions.add(`${investigation_id}:${req.approval_key || req.action}`);
       this.approvedActions.add(`${investigation_id}:${req.action}`);
       // Remove BLOCKED if it was due to this approval
       state.blockers = state.blockers.filter(b => b.code !== 'APPROVAL_REQUIRED');
@@ -634,6 +707,207 @@ export class AISecurityController {
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     };
+  }
+
+  /**
+   * Works out where the analysed source actually lives on disk so scheduled
+   * engines are pointed at a real tree rather than process.cwd(). Prefers the
+   * acquired snapshot's storage path, then falls back to an explicitly supplied
+   * local source directory.
+   */
+  private buildAnalysisParameters(
+    state: ControllerState,
+    target: any
+  ): Record<string, any> {
+    const params: Record<string, any> = {};
+
+    const localSourceDir = target?.metadata?.source_directory || target?.metadata?.local_path;
+    if (typeof localSourceDir === 'string' && localSourceDir) {
+      params.source_directory = localSourceDir;
+      params.target_directory = localSourceDir;
+    }
+
+    // The most recent acquired snapshot for this target is authoritative.
+    try {
+      const snapshots = globalDB.listSourceSnapshots(state.target_id);
+      const usable = snapshots.find(s => s.storage_path) || snapshots[0];
+      if (usable?.storage_path) {
+        params.source_directory = usable.storage_path;
+        params.target_directory = usable.storage_path;
+        params.project_directory = usable.storage_path;
+        params.source_snapshot_id = usable.id;
+      }
+    } catch {
+      // Snapshot lookup is best-effort; engines fail honestly without it.
+    }
+
+    return params;
+  }
+
+  /**
+   * Runs every queued analysis job for this state, then converts the engine
+   * findings that came back into candidate findings and hypotheses.
+   *
+   * The orchestrator already persists real stdout/stderr as evidence artifacts;
+   * this method is what turns those raw results into research records, and is
+   * therefore the step that makes an AI run actually produce findings.
+   */
+  private async executeScheduledJobs(state: ControllerState): Promise<number> {
+    const queued = state.active_jobs
+      .map(id => globalJobOrchestrator.getJob(id))
+      .filter((job): job is NonNullable<typeof job> => Boolean(job))
+      .filter(job => job.status === 'QUEUED' as any);
+
+    let executed = 0;
+
+    for (const job of queued) {
+      try {
+        const finished = await globalJobOrchestrator.runJob(job.id, (artifact) => {
+          // Mirror artifacts into the relational store so integrity checks and
+          // the evidence API see the same bytes the orchestrator hashed.
+          globalDB.saveEvidence(artifact);
+          state.evidence_refs.push({
+            id: `evref-${artifact.id}`,
+            artifact_id: artifact.id,
+            artifact_type: String(artifact.artifact_type),
+            sha256: artifact.sha256,
+            summary: `${artifact.producer} (${job.engine}/${job.operation})`,
+            producer: artifact.producer,
+            producer_version: artifact.producer_version,
+            recorded_at: artifact.created_at,
+          });
+        });
+        executed++;
+
+        // Record the real outcome as a verified fact.
+        state.facts.push({
+          id: `fact-job-${finished.id}`,
+          category: 'EXECUTION',
+          statement:
+            `Job '${finished.id}' (${finished.engine}/${finished.operation}) finished with ` +
+            `status ${finished.status}, exit code ${finished.exit_code}.`,
+          source: 'JobOrchestrator',
+          verified_at: new Date().toISOString(),
+          confidence: 1.0,
+        });
+
+        if (finished.status !== 'COMPLETED') {
+          state.blockers.push({
+            id: `block-job-${finished.id}`,
+            phase: state.current_phase,
+            code: 'ENGINE_EXECUTION_FAILED',
+            message: `Job '${finished.id}' (${finished.engine}) failed: ${finished.error || 'unknown failure'}`,
+            resolution_hint: 'Inspect the job stderr artifact or select another applicable engine.',
+            blocking_entity_id: finished.id,
+            timestamp: new Date().toISOString(),
+          });
+          continue;
+        }
+
+        // The orchestrator does not retain parsed findings, so re-run the
+        // engine's parser over the persisted stdout artifact to recover them.
+        this.collectFindingsFromJob(finished, state);
+      } catch (err: any) {
+        state.blockers.push({
+          id: `block-job-${job.id}`,
+          phase: state.current_phase,
+          code: 'JOB_RUN_FAILED',
+          message: `Job '${job.id}' could not be executed: ${err.message}`,
+          resolution_hint: 'Check engine availability and the job execution context.',
+          blocking_entity_id: job.id,
+          timestamp: new Date().toISOString(),
+        });
+      }
+    }
+
+    // Only clear jobs we actually handled, so a later step can retry failures.
+    const handled = new Set(queued.map(j => j.id));
+    state.active_jobs = state.active_jobs.filter(id => !handled.has(id));
+
+    return executed;
+  }
+
+  /**
+   * Re-parses a completed job's stdout artifact and records each genuine engine
+   * finding as a candidate plus a supporting hypothesis.
+   */
+  private collectFindingsFromJob(job: AnalysisJob, state: ControllerState): void {
+    const stdoutArtifactId = job.stdout_artifact_id;
+    if (!stdoutArtifactId) return;
+
+    const raw = globalDB.getRawArtifactContent(stdoutArtifactId);
+    if (raw === undefined || raw === null) return;
+    const stdout = typeof raw === 'string' ? raw : raw.toString('utf-8');
+    if (!stdout.trim()) return;
+
+    const engine = globalEngineRegistry.get(job.engine);
+    if (!engine) return;
+
+    let findings: EngineFinding[] = [];
+    try {
+      findings = engine.parse_result({ stdout, stderr: '', exit_code: job.exit_code ?? 0 });
+    } catch {
+      findings = [];
+    }
+
+    for (const finding of findings) {
+      const alreadyRecorded = state.hypotheses.some(
+        h => h.title === finding.title && h.target_id === job.target_id
+      );
+      if (alreadyRecorded) continue;
+
+      // Persist as a real candidate finding so it is queryable via the API and
+      // can traverse the verification state machine. It starts at CANDIDATE:
+      // a static hit is a lead, never a confirmed vulnerability.
+      let persistedId: string | null = null;
+      try {
+        const persisted = globalDB.createFinding({
+          investigation_id: state.investigation_id,
+          target_id: job.target_id,
+          title: finding.title,
+          category: finding.category || 'STATIC_ANALYSIS',
+          rule_id: String(finding.metadata?.rule_id || finding.id),
+          description: finding.description,
+          location: { file: finding.file, line_start: finding.line_start, line_end: finding.line_end },
+          severity: (finding.severity as any) || 'MEDIUM',
+          confidence: (finding.confidence as any) || 'LOW',
+          evidence_artifact_ids: job.stdout_artifact_id ? [job.stdout_artifact_id] : [],
+          reproduction_steps: `Reproduce by re-running ${job.engine} (${job.operation}) against the acquired source snapshot.`,
+          metadata: {
+            engine: job.engine,
+            job_id: job.id,
+            cwe: finding.cwe || [],
+            ...(finding.metadata || {}),
+          },
+        });
+        persistedId = persisted.id;
+      } catch {
+        // Persistence is best-effort; the hypothesis below still records the lead.
+      }
+
+      state.hypotheses.push({
+        id: `hyp-${job.engine}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        title: finding.title,
+        premise: finding.description || `${job.engine} reported a potential issue.`,
+        target_id: job.target_id,
+        supporting_fact_ids: [`fact-job-${job.id}`],
+        severity: (finding.severity as any) || 'MEDIUM',
+        confidence: (finding.confidence as any) || 'LOW',
+        status: 'ACTIVE',
+        requires_verification: true,
+        suggested_verification_operation: 'requestVerification',
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      });
+
+      this.emitEvent(ControllerEventType.CANDIDATE_DISCOVERED, {
+        investigation_id: state.investigation_id,
+        finding_id: persistedId,
+        engine: job.engine,
+        title: finding.title,
+        severity: finding.severity,
+      });
+    }
   }
 
   private calculateProgress(state: ControllerState): number {

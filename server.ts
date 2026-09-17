@@ -1756,7 +1756,7 @@ app.post(['/api/v1/candidates/:id/verify', '/api/candidates/:id/verify'], async 
 // POST /api/v1/ai/controller/objective - Submit a research objective
 app.post(['/api/v1/ai/controller/objective', '/api/ai/controller/objective'], async (req, res) => {
   try {
-    const { objective, program_id, target_id, investigation_id, auto_advance } = req.body || {};
+    const { objective, program_id, target_id, investigation_id, auto_advance, max_steps } = req.body || {};
     if (!objective) {
       return res.status(400).json({ error: "Missing required 'objective' in request body." });
     }
@@ -1767,6 +1767,7 @@ app.post(['/api/v1/ai/controller/objective', '/api/ai/controller/objective'], as
       target_id,
       investigation_id,
       auto_advance: auto_advance !== false, // default true
+      max_steps: typeof max_steps === 'number' ? max_steps : undefined,
     });
 
     res.status(200).json(state);
