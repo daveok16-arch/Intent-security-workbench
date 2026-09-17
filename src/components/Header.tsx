@@ -23,20 +23,42 @@ export const Header: React.FC = () => {
         <div className="flex items-center gap-2">
           <div className={`h-1.5 w-1.5 rounded-full ${wsConnected ? 'bg-emerald-500 animate-pulse' : 'bg-rose-500'}`} />
           <span className={wsConnected ? 'text-emerald-500 font-medium' : 'text-rose-400 font-medium'}>
-            API: {wsConnected ? 'ONLINE' : 'OFFLINE'}
+            WS: {wsConnected ? 'ONLINE' : 'OFFLINE'}
           </span>
         </div>
 
         <div className="flex items-center gap-2 text-slate-400">
-          <div className={`h-1.5 w-1.5 rounded-full ${systemStatus?.jobs_running ? 'bg-sky-400 animate-pulse' : 'bg-emerald-500'}`} />
-          <span>WORKER: {systemStatus?.jobs_running ? `${systemStatus.jobs_running} RUNNING` : 'READY'}</span>
+          {/* Worker state is unknown until /api/system/status has been read. */}
+          {systemStatus ? (
+            <>
+              <div className={`h-1.5 w-1.5 rounded-full ${systemStatus.jobs_running ? 'bg-sky-400 animate-pulse' : 'bg-emerald-500'}`} />
+              <span>WORKER: {systemStatus.jobs_running ? `${systemStatus.jobs_running} RUNNING` : 'READY'}</span>
+            </>
+          ) : (
+            <>
+              <div className="h-1.5 w-1.5 rounded-full bg-slate-500" />
+              <span>WORKER: UNKNOWN</span>
+            </>
+          )}
         </div>
 
         <div className="flex items-center gap-2 text-slate-400">
-          <div className={`h-1.5 w-1.5 rounded-full ${engines.some(e => e.availability?.status === 'AVAILABLE' || (e.availability as any)?.available) ? 'bg-emerald-500' : 'bg-amber-500'}`} />
-          <span>
-            ENGINES: {engines.filter(e => e.availability?.status === 'AVAILABLE' || (e.availability as any)?.available).length}/{engines.length || 11}
-          </span>
+          {/* The denominator comes from the registry response itself. Previously
+              it fell back to a hardcoded 11, inventing a fleet size whenever the
+              engines list was empty. */}
+          {engines.length > 0 ? (
+            <>
+              <div className={`h-1.5 w-1.5 rounded-full ${engines.some(e => e.availability?.status === 'AVAILABLE' || (e.availability as any)?.available) ? 'bg-emerald-500' : 'bg-amber-500'}`} />
+              <span>
+                ENGINES: {engines.filter(e => e.availability?.status === 'AVAILABLE' || (e.availability as any)?.available).length}/{engines.length}
+              </span>
+            </>
+          ) : (
+            <>
+              <div className="h-1.5 w-1.5 rounded-full bg-slate-500" />
+              <span>ENGINES: —/—</span>
+            </>
+          )}
         </div>
 
         <div className="h-4 w-px bg-white/10" />

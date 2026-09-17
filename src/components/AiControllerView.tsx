@@ -561,12 +561,39 @@ export const AiControllerView: React.FC = () => {
                     <ShieldCheck className="h-4 w-4 text-emerald-400" />
                     <h3 className="text-sm font-semibold text-white">Ground-Truth Facts</h3>
                   </div>
-                  <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
-                    100% Cryptographically Verified
-                  </span>
+                  {/* Previously asserted "100% Cryptographically Verified", but
+                      research facts carry a confidence value assigned in code
+                      and are not all backed by hashed artifacts. Report how many
+                      of the displayed facts actually cite evidence instead. */}
+                  {(() => {
+                    const facts = activeState.facts || [];
+                    const withEvidence = facts.filter((f: any) =>
+                      (f.evidence_artifact_ids || f.artifact_ids || []).length > 0
+                      || f.source === 'ENGINE_EXECUTION'
+                      || f.source === 'SCOPE_EVALUATION'
+                    ).length;
+                    const allBacked = facts.length > 0 && withEvidence === facts.length;
+                    return (
+                      <span
+                        className={`text-[10px] font-mono px-2 py-0.5 rounded border ${
+                          allBacked
+                            ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30'
+                            : 'bg-amber-500/20 text-amber-300 border-amber-500/30'
+                        }`}
+                        title={allBacked
+                          ? 'Every displayed fact cites evidence produced by an execution or scope evaluation.'
+                          : 'Some displayed facts do not cite machine-verifiable evidence.'}
+                      >
+                        {facts.length === 0
+                          ? 'No facts established'
+                          : `${withEvidence}/${facts.length} evidence-backed`}
+                      </span>
+                    );
+                  })()}
                 </div>
                 <p className="text-xs text-slate-400">
-                  Established by sandbox executions, scope evaluations, and SHA-256 evidence integrity checks.
+                  Established by sandbox executions, scope evaluations, and evidence integrity checks.
+                  Facts without a linked evidence artifact are not cryptographically verified.
                 </p>
 
                 <div className="space-y-2.5 max-h-[480px] overflow-y-auto pr-1">
