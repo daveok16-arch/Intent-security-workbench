@@ -1,4 +1,105 @@
 /**
+ * Detects a solc version pin that would override the target's own pragma.
+ *
+ * `solc-select` stores a single global version in
+ * `~/.solc-select/global-version`, and Slither uses it when the target does not
+ * pin a compiler. Because that state is global and shared across every project
+ * on the host, analysing one repository silently changed the compiler used for
+ * the next one — a `pragma ^0.8.20` fixture compiled with 0.6.12 produced no
+ * output and was reported as an unparseable failure.
+ *
+ * Returns the pinned version so the caller can report it in the failure message,
+ * or null when nothing is pinned.
+ */
+function readGlobalSolcPin(): string | null {
+  try {
+    const home = process.env.HOME || os.homedir();
+    const pinFile = path.join(home, '.solc-select', 'global-version');
+    if (!fs.existsSync(pinFile)) return null;
+    const value = fs.readFileSync(pinFile, 'utf-8').trim();
+    return value || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Locates the solc binary for a specific version via solc-select's artifact
+ * layout, so a pinned compiler can be passed to Slither as a path (Slither's
+ * `--solc` takes a path, not a version string).
+ */
+function resolveSolcBinary(version: string): string | null {
+  const candidates: string[] = [];
+  const home = process.env.HOME || os.homedir();
+  for (const base of [
+    process.env.SOLC_SELECT_PATH,
+    path.join(home, '.solc-select'),
+    path.join(home, '.local', 'share', 'solc-select'),
+    '/usr/local/share/solc-select',
+  ]) {
+    if (!base) continue;
+    candidates.push(
+      path.join(base, 'artifacts', `solc-${version}`, `solc-${version}`),
+      path.join(base, 'artifacts', `solc-${version}`),
+    );
+  }
+  for (const c of candidates) {
+    try {
+      if (fs.existsSync(c) && fs.statSync(c).isFile()) return c;
+    } catch {
+      /* keep looking */
+    }
+  }
+  // Fall back to a bare solc on PATH only when it is the version we need.
+  const onPath = resolveExecutable(`solc-${version}`) || resolveExecutable('solc');
+  return onPath || null;
+}
+
+/**
+ * Resolves the Solidity compiler version the target actually requires from its
+ * pragma, so the run does not depend on the host's global solc pin.
+ */
+function readRequiredSolc(targetDir: string): string | null {
+  try {
+    const entries = fs.readdirSync(targetDir, { recursive: true }) as string[];
+    const versions: string[] = [];
+    for (const rel of entries) {
+      if (!String(rel).endsWith('.sol')) continue;
+      if (String(rel).includes('node_modules')) continue;
+      let text: string;
+      try {
+        text = fs.readFileSync(path.join(targetDir, String(rel)), 'utf-8');
+      } catch {
+        continue;
+      }
+      const m = text.match(/pragma\s+solidity\s+([^;]+);/);
+      if (m) versions.push(m[1].trim());
+    }
+    if (versions.length === 0) return null;
+    // Prefer an exact pin (`0.6.12`, `=0.8.20`) over a range.
+    const exact = versions.find(v => /^=?\d+\.\d+\.\d+$/.test(v));
+    if (exact) return exact.replace(/^=/, '');
+    // Otherwise take the highest lower bound, e.g. ^0.8.20 -> 0.8.20.
+    const bounds = versions
+      .map(v => (v.match(/\d+\.\d+\.\d+/) || [])[0])
+      .filter(Boolean) as string[];
+    if (bounds.length === 0) return null;
+    return bounds.sort(compareSemver).pop() || null;
+  } catch {
+    return null;
+  }
+}
+
+function compareSemver(a: string, b: string): number {
+  const pa = a.split('.').map(Number);
+  const pb = b.split('.').map(Number);
+  for (let i = 0; i < 3; i++) {
+    if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) - (pb[i] || 0);
+  }
+  return 0;
+}
+
+/**
  * Real Slither Solidity Static Analysis Service
  * Intent Security Workbench - Phase 2
  *
@@ -9,6 +110,7 @@
  */
 
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import { execFileSync } from 'child_process';
 import { resolveExecutable } from '../../config/src/binary_resolver.js';
@@ -244,7 +346,18 @@ export class SlitherAnalysisService {
       };
     }
 
-    const args = ['.', '--json', '-', ...(options.args || [])];
+    // Pin the compiler from the target's own pragma rather than inheriting the
+    // host's global solc-select version, which any other project can change.
+    // Slither's `--solc` takes a path, so resolve the binary for that version.
+    const requiredSolc = readRequiredSolc(targetDir);
+    const solcBinary = requiredSolc ? resolveSolcBinary(requiredSolc) : null;
+    const args = [
+      '.',
+      '--json',
+      '-',
+      ...(solcBinary ? ['--solc', solcBinary] : []),
+      ...(options.args || []),
+    ];
     const command = commandFor(args);
     const startMs = Date.now();
     let stdout = '';
@@ -273,6 +386,11 @@ export class SlitherAnalysisService {
 
     // No parsable JSON envelope means the run did not produce analysis output.
     if (!parsed) {
+      const pin = readGlobalSolcPin();
+      const pinNote = pin && requiredSolc && pin !== requiredSolc
+        ? ` The host has a global solc pin of ${pin} while the target requires ${requiredSolc};` +
+          ` ensure the required compiler is installed (solc-select install ${requiredSolc}).`
+        : '';
       return {
         status: 'FAILED',
         executable_path: avail.path,
@@ -284,7 +402,9 @@ export class SlitherAnalysisService {
         duration_ms,
         detectors: [],
         contracts_analyzed: 0,
-        error: 'SLITHER_OUTPUT_UNPARSEABLE: no JSON result envelope was produced (likely a compilation failure).',
+        error:
+          'SLITHER_OUTPUT_UNPARSEABLE: no JSON result envelope was produced (likely a compilation failure).' +
+          pinNote,
       };
     }
 
