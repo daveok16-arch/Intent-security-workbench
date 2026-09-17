@@ -68,9 +68,9 @@ docker run -p 3000:3000 intent-workbench
 
 ```
 engines/                     IEngine implementations (BaseEngine contract)
-  placeholders/              real executors: treesitter, semgrep, static_analysis, z3,
-                             spectral, git_integrity
-                             Phase 1/2 stubs: angr, codeql, slither, foundry, clarinet
+  placeholders/              all 11 are real executors: treesitter, semgrep,
+                             static_analysis, z3, spectral, git_integrity,
+                             slither, codeql, angr, clarinet, foundry
 packages/
   core/                      entities, finding state machine, scope/investigation gates
   config/                    binary_resolver (PATH + standard dirs), AI provider config
@@ -119,14 +119,45 @@ State invariants worth knowing:
 - Jobs dispatched by the controller must carry the controller's `investigation_id`; the
   controller adopts the store-assigned id on auto-create so these agree.
 
-## Engine install reality
+## Engine implementations
 
-Installing a binary does **not** make a placeholder engine productive. `angr`, `codeql`,
-`slither`, `foundry`, and `clarinet` return `ENGINE_NOT_IMPLEMENTED` when their binary is
-present (see `BaseEngine.notImplementedResult`). Only the engines listed as "real
-executors" above produce findings. `foundry` intentionally resolves the non-existent
-toolkit name `foundry` and stays `NOT_INSTALLED`; real Forge use is Phase 5 dynamic
-verification via `ToolDetector.detectForge()`.
+All 11 engines execute real tooling. Each drives its binary and maps genuine output
+onto `EngineFinding` records, persisting raw output as a SHA-256 evidence artifact:
+
+| Engine | Drives | Output parsed |
+| :--- | :--- | :--- |
+| treesitter | precompiled WASM grammars | structural AST matches |
+| semgrep | `semgrep --json` | rule/taint results |
+| static-analysis | Tree-sitter + Semgrep | correlated candidates |
+| z3 | `z3 -smt2` | sat/unsat + model |
+| spectral | `spectral lint -f json` | OpenAPI rule violations |
+| git-source-integrity | `git` | commit/tree hashes |
+| slither | `slither --json -` | detector suite results |
+| codeql | `codeql database create/analyze` | SARIF results |
+| angr | `angr_analyzer.py` (Python driver) | CFG + dangerous symbols |
+| clarinet | `clarinet check --output json` | Clarity diagnostics |
+| foundry | `forge test --json` | per-test pass/fail |
+
+Non-obvious integration details:
+- **angr** is a Python library with no `--version` flag, so analysis runs through
+  `packages/dynamic-verification/src/angr_analyzer.py`, which must sit beside
+  `angr_service.ts` because the path is resolved from `import.meta.url`.
+- **clarinet** requires a `Clarinet.toml` project, so a bare `.clar` file is scaffolded
+  into a throwaway project in a temp dir. Contract names must be valid Clarity
+  identifiers (no leading digits). Diagnostics reference the scaffolded copy, so
+  `fileMap` rewrites them back to the real source path.
+- **foundry** represents the toolkit; there is no `foundry` binary, so availability
+  resolves `forge`. A *passing* test whose name matches
+  `exploit|unauthorized|bola|reentrancy|...` is recorded as positive reproduction
+  evidence; a failing one as non-reproduction. The engine reports evidence, not a verdict.
+- **codeql** extracts without a build system for JavaScript/TypeScript, Python and Java.
+  C/C++ needs a build system, so those runs fail honestly rather than reporting a clean scan.
+  Stock JS/CWE-639 (BOLA) has no query in CodeQL's shipping suites, so absence of a
+  BOLA result is a coverage limitation, not a clean bill of health.
+
+The engine test suite is host-independent: parser tests run against captured fixtures,
+and live-execution tests skip themselves when the engine is not installed. Verified by
+running the full suite with slither/clarinet/codeql/angr hidden from `PATH`.
 
 System-wide (not `--user`) installs are required, because engine subprocesses run with a
 sandboxed `HOME`:
@@ -135,7 +166,9 @@ sandboxed `HOME`:
 sudo pip install semgrep slither-analyzer solc-select
 sudo pip install "angr==9.2.160" "pycparser==2.22" "z3-solver==4.13.0.0"
 sudo -E solc-select install 0.8.20 && sudo -E solc-select use 0.8.20
-# clarinet: repo moved to stx-labs/clarinet; asset name is clarinet-linux-x64-glibc.tar.gz
+sudo pip install slither-analyzer solc-select          # slither + solc
+sudo -E solc-select install 0.8.20 && sudo -E solc-select use 0.8.20
+# clarinet: repo moved to stx-labs/clarinet; asset is clarinet-linux-x64-glibc.tar.gz
 # codeql:   codeql-bundle-linux64.tar.gz from github/codeql-action releases
 ```
 

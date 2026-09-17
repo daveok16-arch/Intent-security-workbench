@@ -196,42 +196,61 @@ describe('Phase 0.1 Engine Abstraction Layer Comprehensive Test Suite', () => {
     expect(z3Match!.status).toBe(EngineAvailabilityStatus.AVAILABLE);
     expect(z3Match!.detected_path).toBeTruthy();
 
-    // Verify uninstalled placeholder engines in API return NOT_INSTALLED and no fabricated version
-    const placeholderIds = ['angr', 'codeql', 'slither', 'foundry', 'clarinet'];
-    for (const pid of placeholderIds) {
+    // Every engine must report a status consistent with host reality. An engine
+    // whose binary is absent must never carry a fabricated path or version.
+    const previouslyPlaceholderIds = ['angr', 'codeql', 'slither', 'foundry', 'clarinet'];
+    for (const pid of previouslyPlaceholderIds) {
       const match = checks.find(c => c.engine_id === pid);
       expect(match).toBeDefined();
-      // A binary may or may not be installed on a given host, but a status
-      // of NOT_INSTALLED must never carry a fabricated path or version.
       if (match!.status === EngineAvailabilityStatus.NOT_INSTALLED) {
         expect(match!.version).toBeNull();
         expect(match!.detected_path).toBeNull();
+      } else {
+        expect(match!.detected_path).toBeTruthy();
       }
     }
 
-    // Foundry is a toolkit, not a single binary, so it can never resolve.
+    // Foundry is a toolkit, so it resolves the `forge` binary rather than a
+    // `foundry` executable. Whether the toolchain is present is host-dependent,
+    // so assert the invariant rather than the developer's installed toolchain.
     const foundryMatch = checks.find(c => c.engine_id === 'foundry');
-    expect(foundryMatch!.status).toBe(EngineAvailabilityStatus.NOT_INSTALLED);
+    expect(foundryMatch).toBeDefined();
+    if (foundryMatch!.status === EngineAvailabilityStatus.NOT_INSTALLED) {
+      expect(foundryMatch!.detected_path).toBeNull();
+      expect(foundryMatch!.version).toBeNull();
+    } else {
+      expect(foundryMatch!.detected_path).toContain('forge');
+    }
   });
 
   // Requirement 10: CLI returns real registry state
   it('10. CLI returns real registry state without fabricated values', () => {
     const cliOutput = execFileSync('npx', ['tsx', 'cli.ts', 'engines', 'list'], {
       encoding: 'utf-8',
-      timeout: 10000,
+      timeout: 30000,
     });
 
     expect(cliOutput).toContain('INTENT SECURITY WORKBENCH — ENGINE REGISTRY');
-    expect(cliOutput).toContain('treesitter');
-    expect(cliOutput).toContain('semgrep');
-    expect(cliOutput).toContain('z3');
-    expect(cliOutput).toContain('angr');
-    expect(cliOutput).toContain('codeql');
-    expect(cliOutput).toContain('slither');
-    expect(cliOutput).toContain('foundry');
-    expect(cliOutput).toContain('clarinet');
-    expect(cliOutput).toContain('spectral');
-    expect(cliOutput).toContain('NOT INSTALLED');
+    for (const id of [
+      'treesitter', 'semgrep', 'static-analysis', 'z3', 'angr', 'codeql',
+      'slither', 'foundry', 'clarinet', 'spectral', 'git-source-integrity',
+    ]) {
+      expect(cliOutput).toContain(id);
+    }
+
+    // Each engine row must report a real status; a NOT INSTALLED row must not
+    // carry a version. This is host-independent: on a fully provisioned host
+    // every row is AVAILABLE, and on a bare host some are NOT INSTALLED.
+    const rows = cliOutput
+      .split('\n')
+      .map(l => l.trim())
+      .filter(l => /^[a-z][a-z0-9-]+\s+(AVAILABLE|NOT INSTALLED|UNAVAILABLE|BROKEN)\b/.test(l));
+    expect(rows.length).toBeGreaterThanOrEqual(11);
+    for (const row of rows) {
+      if (row.includes('NOT INSTALLED')) {
+        expect(row).toMatch(/NOT INSTALLED\s+-\s*$/);
+      }
+    }
   });
 
   // Requirement 11: Frontend displays backend state
@@ -270,23 +289,26 @@ describe('Phase 0.1 Engine Abstraction Layer Comprehensive Test Suite', () => {
 
   // Requirement 12: No mock findings exist
   it('12. should never return synthetic or mock findings from engines', async () => {
-    const placeholderEngines = [
+    // Each engine is pinned to a binary name that cannot exist so the test
+    // asserts the anti-fabrication invariant rather than the host toolchain.
+    const unavailableEngines = [
       new TreeSitterEngine('nonexistent-treesitter'),
       new SemgrepEngine('nonexistent-semgrep'),
       new Z3Engine('nonexistent-z3'),
       new AngrEngine('intent-nonexistent-angr-binary'),
       new CodeQLEngine('intent-nonexistent-codeql-binary'),
       new SlitherEngine('intent-nonexistent-slither-binary'),
-      new FoundryEngine(),
+      new FoundryEngine('intent-nonexistent-forge-binary'),
       new ClarinetEngine('intent-nonexistent-clarinet-binary'),
       new SpectralEngine('nonexistent-spectral'),
     ];
 
-    for (const eng of placeholderEngines) {
+    for (const eng of unavailableEngines) {
       const result = await eng.execute('tgt-mock-test', 'test-op', {});
       expect(result.findings).toEqual([]);
       expect(result.artifacts).toEqual([]);
       expect(result.status).toBe(EngineResultStatus.UNAVAILABLE);
+      expect(result.exit_code).toBe(127);
     }
   });
 

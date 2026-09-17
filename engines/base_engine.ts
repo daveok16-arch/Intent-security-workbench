@@ -261,6 +261,49 @@ export abstract class BaseEngine implements IEngine {
   }
 
   /**
+   * Registers real engine output as a machine-verifiable evidence artifact with
+   * a genuine SHA-256 digest and byte size. Returns null (never a placeholder
+   * hash) when there is no content to persist.
+   */
+  protected async registerOutputArtifact(
+    investigationId: string | undefined,
+    targetId: string,
+    label: string,
+    content: string,
+    mimeType = 'application/json'
+  ): Promise<string | null> {
+    if (!investigationId || !content || content.length === 0) return null;
+    try {
+      const { globalArtifactStorage } = await import('../packages/evidence/src/index.js');
+      const { createEvidenceArtifact } = await import('../packages/evidence/src/index.js');
+      const filename = `${label}-${Date.now()}.out`;
+
+      // storeSync is used when present so the artifact tree is written eagerly;
+      // otherwise fall back to the async store implementation.
+      const meta =
+        typeof (globalArtifactStorage as any).storeSync === 'function'
+          ? (globalArtifactStorage as any).storeSync(investigationId, 'engines', filename, content, mimeType)
+          : await globalArtifactStorage.store(investigationId, 'engines', filename, content, mimeType);
+
+      const built = createEvidenceArtifact({
+        investigation_id: investigationId,
+        target_id: targetId,
+        artifact_type: 'ENGINE_OUTPUT' as any,
+        producer: this.name,
+        producer_version: this.version,
+        command: `${this.executable} ${label}`,
+        content,
+        path: meta.path,
+        path_or_reference: meta.path,
+        mime_type: mimeType,
+      });
+      return built.artifact.id;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * Standard environment information for result provenance.
    */
   protected getEnvironmentInfo(detectedPath?: string | null) {
