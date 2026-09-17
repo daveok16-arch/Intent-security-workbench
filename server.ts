@@ -519,7 +519,24 @@ app.post(['/api/v1/targets', '/api/targets'], (req, res) => {
     }
 
     const adapter = getTargetAdapter(ecosystem);
-    const validation = adapter.validateTarget({ name, target_type, deployment_information: deployment_information || deployment, repository_url });
+    // Accept the contract address in either shape. The route stores a top-level
+    // `contract_address`, but the EVM adapter only inspects
+    // `deployment_information.address`, so registering a smart contract by
+    // address alone was rejected with "requires either a contract address or a
+    // source repository URL" — which is how every bounty-platform smart-contract
+    // asset is specified.
+    const normalizedDeployment = {
+      ...(deployment || deployment_information || {}),
+      ...(contract_address && !(deployment_information?.address || deployment?.address)
+        ? { address: contract_address }
+        : {}),
+    };
+    const validation = adapter.validateTarget({
+      name,
+      target_type,
+      deployment_information: normalizedDeployment,
+      repository_url,
+    });
     if (!validation.valid) {
       return res.status(400).json({ error: 'Validation failed', details: validation.errors });
     }
@@ -534,9 +551,17 @@ app.post(['/api/v1/targets', '/api/targets'], (req, res) => {
       commit_hash,
       branch,
       deployment: deployment || deployment_information,
-      deployment_information: deployment_information || deployment,
       chain,
       contract_address,
+      // Persist the address into deployment_information as well, so
+      // deployment-aware consumers (scope evaluation, the UI, source
+      // acquisition) see the same value the validator accepted.
+      deployment_information: {
+        ...(deployment_information || deployment || {}),
+        ...(contract_address && !(deployment_information?.address || deployment?.address)
+          ? { address: contract_address }
+          : {}),
+      },
       // source_hash / source_acquisition_status / authorization_status /
       // scope_status are deliberately NOT forwarded. createTarget pins them to
       // SOURCE_NOT_ACQUIRED / NOT_EVALUATED so a caller cannot register a target
