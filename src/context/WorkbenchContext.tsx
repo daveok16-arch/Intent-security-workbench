@@ -6,7 +6,8 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import {
   Program, Target, Investigation, AnalysisJob, EvidenceArtifact, Finding,
-  EngineItem, SystemStatus, TabType, FindingStatus, InvestigationStatus, SourceAcquisitionStatus
+  EngineItem, SystemStatus, TabType, FindingStatus, InvestigationStatus, SourceAcquisitionStatus,
+  BuildInfo, ServiceDiagnostics
 } from '../types.js';
 
 interface WorkbenchContextType {
@@ -23,6 +24,8 @@ interface WorkbenchContextType {
   findings: Finding[];
   engines: EngineItem[];
   systemStatus: SystemStatus | null;
+  buildInfo: BuildInfo | null;
+  diagnostics: ServiceDiagnostics | null;
   wsConnected: boolean;
   liveNotifications: { id: string; type: string; message: string; timestamp: string }[];
   
@@ -72,6 +75,8 @@ export const WorkbenchProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const [findings, setFindings] = useState<Finding[]>([]);
   const [engines, setEngines] = useState<EngineItem[]>([]);
   const [systemStatus, setSystemStatus] = useState<SystemStatus | null>(null);
+  const [buildInfo, setBuildInfo] = useState<BuildInfo | null>(null);
+  const [diagnostics, setDiagnostics] = useState<ServiceDiagnostics | null>(null);
   
   const [wsConnected, setWsConnected] = useState<boolean>(false);
   const [liveNotifications, setLiveNotifications] = useState<{ id: string; type: string; message: string; timestamp: string }[]>([]);
@@ -86,7 +91,7 @@ export const WorkbenchProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const refreshAll = useCallback(async () => {
     try {
       setLoading(true);
-      const [progRes, tgtRes, invRes, jobsRes, evRes, fndRes, engRes, statRes] = await Promise.all([
+      const [progRes, tgtRes, invRes, jobsRes, evRes, fndRes, engRes, statRes, verRes, diagRes] = await Promise.all([
         fetch('/api/programs').then(r => r.json()),
         fetch('/api/targets').then(r => r.json()),
         fetch('/api/investigations').then(r => r.json()),
@@ -95,6 +100,8 @@ export const WorkbenchProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         fetch('/api/findings').then(r => r.json()),
         fetch('/api/engines').then(r => r.json()),
         fetch('/api/system/status').then(r => r.json()),
+        fetch('/api/version').then(r => r.json()).catch(() => null),
+        fetch('/api/system/diagnostics').then(r => r.json()).catch(() => null),
       ]);
 
       if (Array.isArray(progRes)) setPrograms(progRes);
@@ -105,6 +112,10 @@ export const WorkbenchProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       if (Array.isArray(fndRes)) setFindings(fndRes);
       if (Array.isArray(engRes)) setEngines(engRes);
       if (statRes && typeof statRes === 'object') setSystemStatus(statRes);
+      // Only adopt these when the backend actually reported them, so the UI
+      // renders "unknown" instead of inventing a version or a healthy service.
+      if (verRes && typeof verRes === 'object' && verRes.api_version) setBuildInfo(verRes);
+      if (diagRes && typeof diagRes === 'object') setDiagnostics(diagRes);
 
       setError(null);
     } catch (err: any) {
@@ -141,7 +152,7 @@ export const WorkbenchProvider: React.FC<{ children: React.ReactNode }> = ({ chi
               addNotification('JOB_STARTED', `Job ${data.payload.job.id} execution started on worker.`);
               refreshAll();
             } else if (data.type === 'job_completed') {
-              addNotification('JOB_COMPLETED', `Job ${data.payload.job.id} finished with exit code 0.`);
+              addNotification('JOB_COMPLETED', `Job ${data.payload.job.id} finished with exit code ${data.payload.job.exit_code ?? 'unknown'}.`);
               refreshAll();
             } else if (data.type === 'job_failed') {
               addNotification('JOB_FAILED', `Job ${data.payload.job.id} failed: ${data.payload.job.error || 'error'}`);
@@ -455,6 +466,8 @@ export const WorkbenchProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         findings,
         engines,
         systemStatus,
+        buildInfo,
+        diagnostics,
         wsConnected,
         liveNotifications,
         loading,

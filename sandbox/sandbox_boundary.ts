@@ -45,6 +45,19 @@ const PROHIBITED_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
   { pattern: /\$\([^)]*\)/, reason: 'command substitution' },
   { pattern: /[;&|]\s*(curl|wget|nc|ncat|netcat)\b/i, reason: 'network fetch chained into command' },
   { pattern: />\s*\/etc\//i, reason: 'write into /etc' },
+  // Network egress and reverse shells. `>/dev/tcp/<host>/<port>` is a bash
+  // built-in that opens a socket without any external binary, and `nc -e` /
+  // `bash -i >&` spawn an interactive shell on a remote host. Neither involves
+  // the characters the destructive-op patterns look for.
+  { pattern: /\/dev\/(tcp|udp)\//i, reason: 'raw socket via /dev/tcp or /dev/udp' },
+  { pattern: /(^|[;&|`(]|\s)\s*(nc|ncat|netcat)\b[^\n]*\s-e\b/i, reason: 'reverse shell via netcat -e' },
+  { pattern: /(^|[;&|`(]|\s)\s*(bash|sh|zsh|dash)\s+[^\n]*-[a-z]*i[a-z]*\b/i, reason: 'interactive shell spawn' },
+  { pattern: /\d+(\.\d+){3}\s+\d{1,5}\s*$/m, reason: 'socket address (host port) in command' },
+  { pattern: /\bbase64\s+(-d|--decode)\b[^\n]*\|\s*(bash|sh|zsh|dash|python3?|perl|ruby|node)\b/i, reason: 'decoded payload piped into an interpreter' },
+  { pattern: /(^|[;&|`(]|\s)\s*eval\b/i, reason: 'dynamic evaluation via eval' },
+  // Reverse-shell and exfiltration primitives that do not need a separate
+  // network binary.
+  { pattern: /(^|[;&|`(]|\s)\s*(telnet|socat|ssh)\b/i, reason: 'outbound remote session tool' },
   // Privilege escalation
   { pattern: /(^|[;&|`(]|\s)\s*sudo\b/i, reason: 'privilege escalation via sudo' },
   { pattern: /(^|[;&|`(]|\s)\s*chmod\s+[^\n]*\+s\b/i, reason: 'setuid/setgid bit manipulation' },

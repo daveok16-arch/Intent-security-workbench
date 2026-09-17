@@ -13,7 +13,7 @@ import path from 'path';
 import { WebSocketServer, WebSocket } from 'ws';
 import { createServer as createViteServer } from 'vite';
 
-import { globalDB } from './apps/api/db_store.js';
+import { globalDB, sanitizeTargetWrite, sanitizeProgramWrite } from './apps/api/db_store.js';
 import { globalJobOrchestrator } from './packages/orchestrator/src/index.js';
 import { globalEngineRegistry } from './engines/engine_registry.js';
 import { KNOWN_TAXONOMY } from './packages/vulnerability-intelligence/src/index.js';
@@ -21,7 +21,8 @@ import { SandboxSecurityEnforcer, DEFAULT_SANDBOX_POLICY } from './sandbox/sandb
 import { getProgramAdapter } from './adapters/programs/index.js';
 import { getTargetAdapter } from './adapters/targets/index.js';
 import { verifyArtifactIntegrity } from './packages/evidence/src/index.js';
-import { ScopeAssetType, ScopeInclusionStatus } from './packages/core/src/index.js';
+import { assertContainedDirectory } from './packages/config/src/index.js';
+import { ScopeAssetType, ScopeInclusionStatus, ArtifactProvenance } from './packages/core/src/index.js';
 import {
   globalCandidateStore,
   globalSecurityRuleRegistry,
@@ -358,9 +359,11 @@ app.post(['/api/v1/programs', '/api/programs'], (req, res) => {
 
 app.patch(['/api/v1/programs/:id', '/api/programs/:id'], (req, res) => {
   try {
-    const updated = globalDB.updateProgram(req.params.id, req.body);
+    // status and freshness_status gate the investigation pre-flight check.
+    const { value, rejected } = sanitizeProgramWrite(req.body || {});
+    const updated = globalDB.updateProgram(req.params.id, value);
     broadcastEvent('program_updated', updated);
-    res.json(updated);
+    res.json({ ...updated, ...(rejected.length ? { rejected_fields: rejected } : {}) });
   } catch (err: any) {
     res.status(400).json({ error: err.message });
   }
@@ -534,10 +537,10 @@ app.post(['/api/v1/targets', '/api/targets'], (req, res) => {
       deployment_information: deployment_information || deployment,
       chain,
       contract_address,
-      source_hash,
-      source_acquisition_status,
-      authorization_status,
-      scope_status,
+      // source_hash / source_acquisition_status / authorization_status /
+      // scope_status are deliberately NOT forwarded. createTarget pins them to
+      // SOURCE_NOT_ACQUIRED / NOT_EVALUATED so a caller cannot register a target
+      // pre-authorized or pre-verified.
       metadata,
     });
 
@@ -553,9 +556,14 @@ app.post(['/api/v1/targets', '/api/targets'], (req, res) => {
 
 app.patch(['/api/v1/targets/:id', '/api/targets/:id'], (req, res) => {
   try {
-    const updated = globalDB.updateTarget(req.params.id, req.body);
+    // Strip server-controlled fields (authorization_status, scope_status,
+    // source_acquisition_status, source_hash, id). These decide whether the
+    // pre-flight gate lets an investigation proceed, so they are never
+    // client-writable. Refused fields are reported rather than silently dropped.
+    const { value, rejected } = sanitizeTargetWrite(req.body || {});
+    const updated = globalDB.updateTarget(req.params.id, value);
     broadcastEvent('target_updated', updated);
-    res.json(updated);
+    res.json({ ...updated, ...(rejected.length ? { rejected_fields: rejected } : {}) });
   } catch (err: any) {
     res.status(400).json({ error: err.message });
   }
@@ -882,6 +890,10 @@ app.post(['/api/v1/evidence', '/api/evidence'], (req, res) => {
       path: customPath || path_or_reference,
       mime_type,
       metadata,
+      // This route accepts bytes from the caller. The workbench hashes them, but
+      // that proves integrity only, not origin — so they must not satisfy the
+      // machine-verifiable gate to VALIDATED / CONFIRMED.
+      provenance: ArtifactProvenance.CLIENT_SUPPLIED,
     });
 
     broadcastEvent('evidence_created', artifact);
@@ -1163,18 +1175,49 @@ app.post(['/api/v1/investigations/:id/analysis/static', '/api/investigations/:id
     let snapshotId = source_snapshot_id;
     let sourceDir = source_directory;
 
+    // An explicit directory from the request body is not trusted. Engines read
+    // and hash whatever tree they are pointed at, so accepting an arbitrary path
+    // turns this route into a directory reader whose output is returned as
+    // evidence. If a directory is supplied it must be a real acquired snapshot.
+    if (sourceDir) {
+      const snapshots = globalDB.listSourceSnapshots(targetId);
+      const match = snapshots.find(
+        s => s.storage_path && path.resolve(s.storage_path) === path.resolve(sourceDir)
+      );
+      if (!match) {
+        return res.status(403).json({
+          error:
+            `source_directory '${sourceDir}' is not an acquired source snapshot for target ` +
+            `'${targetId}'. Acquire the source first, or omit source_directory to use the latest snapshot.`,
+          code: 'SOURCE_DIRECTORY_NOT_AUTHORIZED',
+        });
+      }
+      snapshotId = snapshotId || match.id;
+    }
+
     if (!snapshotId) {
       const snapshots = globalDB.listSourceSnapshots(targetId);
       if (snapshots.length > 0) {
         snapshotId = snapshots[0].id;
-      } else {
-        snapshotId = `snap-${targetId}-default`;
       }
     }
 
     if (!sourceDir) {
-      // Default to root or fixtures if testing
-      sourceDir = process.cwd();
+      // Fall back to the directory of the acquired snapshot being analysed.
+      // Previously this defaulted to process.cwd(), which silently ran every
+      // engine against the workbench's own source tree and reported the results
+      // as findings about the target.
+      const snapshot = snapshotId ? globalDB.getSourceSnapshot(snapshotId) : undefined;
+      sourceDir = snapshot?.storage_path;
+    }
+
+    if (!sourceDir) {
+      return res.status(409).json({
+        error:
+          `No acquired source is available for target '${targetId}'. Acquire the target source ` +
+          `(POST /api/v1/targets/:id/source/acquire) before running static analysis.`,
+        code: 'SOURCE_NOT_ACQUIRED',
+      });
     }
 
     // Create and queue an analysis job in the orchestrator
@@ -1327,7 +1370,41 @@ app.post(['/api/v1/investigations/:id/analysis/api', '/api/investigations/:id/an
 
     const { target_id, source_directory, source_snapshot_id, specification_file_path, ruleset_path } = req.body;
     const targetId = target_id || inv.target_id;
-    const sourceDir = source_directory || process.cwd();
+
+    // As with the static-analysis route, an explicit directory must correspond
+    // to an acquired snapshot rather than any path the caller names.
+    let sourceDir = source_directory;
+    if (sourceDir) {
+      const snapshots = globalDB.listSourceSnapshots(targetId);
+      const match = snapshots.find(
+        s => s.storage_path && path.resolve(s.storage_path) === path.resolve(sourceDir)
+      );
+      if (!match) {
+        return res.status(403).json({
+          error:
+            `source_directory '${sourceDir}' is not an acquired source snapshot for target ` +
+            `'${targetId}'. Acquire the source first, or omit source_directory to use the latest snapshot.`,
+          code: 'SOURCE_DIRECTORY_NOT_AUTHORIZED',
+        });
+      }
+    }
+
+    if (!sourceDir) {
+      const snapshots = globalDB.listSourceSnapshots(targetId);
+      const snapshot = source_snapshot_id
+        ? globalDB.getSourceSnapshot(source_snapshot_id)
+        : snapshots[0];
+      sourceDir = snapshot?.storage_path;
+    }
+
+    if (!sourceDir) {
+      return res.status(409).json({
+        error:
+          `No acquired source is available for target '${targetId}'. Acquire the target source ` +
+          `before running API analysis.`,
+        code: 'SOURCE_NOT_ACQUIRED',
+      });
+    }
 
     const analysisResult = await globalAPIAnalysisOrchestrator.runAnalysis({
       investigationId,
@@ -1601,6 +1678,26 @@ app.post(['/api/v1/investigations/:id/verification/dynamic', '/api/investigation
       parameters,
     } = req.body || {};
 
+    // `custom_fixture_dir` becomes the working directory for `forge test` /
+    // `clarinet check`, so an unbounded value lets a caller point the runner at
+    // any directory the server can read. Restrict it to the workbench's own
+    // fixtures tree. Internal callers (tests, the controller) invoke the service
+    // directly and are unaffected.
+    let fixtureDir: string | undefined;
+    if (custom_fixture_dir) {
+      const fixturesRoot = path.resolve(process.cwd(), 'fixtures', 'dynamic_verification');
+      const contained = assertContainedDirectory(String(custom_fixture_dir), [fixturesRoot]);
+      if (!contained.ok) {
+        return res.status(403).json({
+          error:
+            `custom_fixture_dir '${custom_fixture_dir}' is not permitted: ${contained.error} ` +
+            `Fixtures must live under ${fixturesRoot}.`,
+          code: 'FIXTURE_DIRECTORY_NOT_AUTHORIZED',
+        });
+      }
+      fixtureDir = contained.resolved;
+    }
+
     const job = await globalDynamicVerificationService.execute({
       investigation_id: investigationId,
       candidate_id: candidate_id || '',
@@ -1611,7 +1708,7 @@ app.post(['/api/v1/investigations/:id/verification/dynamic', '/api/investigation
       caller,
       owner,
       operation,
-      custom_fixture_dir,
+      custom_fixture_dir: fixtureDir,
       parameters,
     });
 
@@ -1833,12 +1930,46 @@ app.post(['/api/v1/ai/controller/tool/invoke', '/api/ai/controller/tool/invoke']
       return res.status(400).json({ error: "Missing required 'tool' name." });
     }
 
+    const definition = globalToolRegistry.getTool(tool);
+    if (!definition) {
+      return res.status(404).json({ error: `Tool '${tool}' is not registered.` });
+    }
+
+    // This route is a manual entry point outside the agent loop. It must not
+    // self-approve: tools marked `requires_approval` perform state-changing or
+    // sensitive work (dynamic verification, exploit execution), and the only
+    // legitimate source of approval is a researcher resolving a pending
+    // approval request via /ai/controller/approve.
+    let approved = false;
+    if (definition.requires_approval) {
+      if (!investigation_id) {
+        return res.status(400).json({
+          error: `Tool '${tool}' requires approval and needs an 'investigation_id' to check it against.`,
+          code: 'APPROVAL_REQUIRED',
+        });
+      }
+      approved = globalAISecurityController.isToolApproved(
+        investigation_id,
+        tool,
+        parameters || {}
+      );
+      if (!approved) {
+        return res.status(403).json({
+          error:
+            `Tool '${tool}' requires explicit researcher approval before execution. ` +
+            `Run it through the AI controller so an approval request is raised, then approve it ` +
+            `via POST /api/v1/ai/controller/approve/:id.`,
+          code: 'APPROVAL_REQUIRED',
+        });
+      }
+    }
+
     const result = await globalToolRegistry.invokeTool(tool, parameters || {}, {
       session_id: `manual-invoke-${Date.now()}`,
       investigation_id,
       program_id,
       target_id,
-      is_approved: () => true,
+      is_approved: () => approved,
     });
 
     res.json(result);

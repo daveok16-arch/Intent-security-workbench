@@ -173,6 +173,22 @@ export enum ArtifactType {
   GIT_METADATA = 'GIT_METADATA',
 }
 
+export enum ArtifactProvenance {
+  /**
+   * Produced by a real engine execution or a verified internal subsystem. The
+   * workbench generated the bytes from an observed process, so the artifact is
+   * machine-verifiable evidence.
+   */
+  MACHINE_VERIFIABLE = 'MACHINE_VERIFIABLE',
+  /**
+   * Supplied by a caller (e.g. POST /api/evidence) and merely hashed by the
+   * workbench. The digest proves the bytes were not altered after storage, but
+   * proves nothing about where they came from. Cannot satisfy the gate to
+   * VALIDATED / CONFIRMED.
+   */
+  CLIENT_SUPPLIED = 'CLIENT_SUPPLIED',
+}
+
 export enum EvidenceEventType {
   SOURCE_ACQUIRED = 'SOURCE_ACQUIRED',
   SOURCE_ACQUISITION_STARTED = 'SOURCE_ACQUISITION_STARTED',
@@ -397,6 +413,12 @@ export interface EvidenceArtifact {
   sha256: string;
   mime_type: string;
   created_at: string;
+  /**
+   * How these bytes came to exist. Defaults to MACHINE_VERIFIABLE for artifacts
+   * built by internal subsystems; caller-supplied API payloads are
+   * CLIENT_SUPPLIED and cannot back a VALIDATED / CONFIRMED transition.
+   */
+  provenance?: ArtifactProvenance | string;
   metadata: Record<string, any>;
   // Optional convenience fields
   type?: ArtifactType | string; // alias for artifact_type
@@ -587,11 +609,17 @@ export const VALID_FINDING_TRANSITIONS: Record<FindingStatus, FindingStatus[]> =
 
 /**
  * Validates if a state transition is legally permissible under Phase 0 rules.
+ *
+ * `hasEvidenceArtifacts` gates the terminal verified states. Callers that can
+ * distinguish artifact provenance should pass `hasMachineVerifiableEvidence`
+ * so that merely hashed caller-supplied payloads cannot reach VALIDATED /
+ * CONFIRMED. Omitting it preserves the original count-based behaviour.
  */
 export function validateFindingTransition(
   currentStatus: FindingStatus,
   targetStatus: FindingStatus,
-  hasEvidenceArtifacts: boolean = false
+  hasEvidenceArtifacts: boolean = false,
+  hasMachineVerifiableEvidence?: boolean
 ): { allowed: boolean; reason?: string } {
   if (currentStatus === targetStatus) {
     return { allowed: true };
@@ -610,6 +638,21 @@ export function validateFindingTransition(
     return {
       allowed: false,
       reason: `Cannot transition to ${targetStatus} without linked machine-verifiable evidence artifacts.`,
+    };
+  }
+
+  // When provenance is known, only engine-produced artifacts qualify. A hash
+  // computed over caller-supplied bytes proves integrity, not origin.
+  if (
+    (targetStatus === FindingStatus.CONFIRMED || targetStatus === FindingStatus.VALIDATED) &&
+    hasMachineVerifiableEvidence === false
+  ) {
+    return {
+      allowed: false,
+      reason:
+        `Cannot transition to ${targetStatus}: linked artifacts are CLIENT_SUPPLIED. ` +
+        `A VALIDATED / CONFIRMED finding requires evidence produced by an engine execution ` +
+        `or verified internal subsystem, not payloads hashed on the caller's behalf.`,
     };
   }
 

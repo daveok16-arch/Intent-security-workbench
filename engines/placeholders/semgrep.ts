@@ -147,7 +147,7 @@ export class SemgrepEngine extends BaseEngine {
         id: `res-${this.engine_id}-${Date.now()}`,
         engine_id: this.engine_id,
         engine_name: this.name,
-        engine_version: this.version,
+        engine_version: this.engineVersionFor(avail),
         status: EngineResultStatus.UNAVAILABLE,
         target_id: targetId,
         investigation_id: ctx.investigation_id,
@@ -194,9 +194,9 @@ export class SemgrepEngine extends BaseEngine {
       metadata: c.metadata,
     }));
 
-    const artifacts: EngineArtifact[] = scanRes.artifactIds.map(id =>
-      this.describeArtifact(id, 'ENGINE_OUTPUT', `artifacts/${id}`)
-    );
+    const artifacts: EngineArtifact[] = scanRes.artifactIds
+      .map(id => this.describeArtifact(id, 'ENGINE_OUTPUT', `artifacts/${id}`))
+      .filter((a): a is EngineArtifact => a !== null);
 
     const status = scanRes.execution.status === 'COMPLETED' ? EngineResultStatus.SUCCESS : EngineResultStatus.FAILED;
 
@@ -204,7 +204,7 @@ export class SemgrepEngine extends BaseEngine {
       id: `res-${this.engine_id}-${Date.now()}`,
       engine_id: this.engine_id,
       engine_name: this.name,
-      engine_version: scanRes.execution.version || this.version,
+      engine_version: scanRes.execution.version || this.engineVersionFor(avail),
       status,
       target_id: targetId,
       investigation_id: investigationId,

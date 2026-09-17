@@ -43,7 +43,7 @@ export const Sidebar: React.FC = () => {
   ];
 
   const runningJobCount = jobs.filter(j => j.status === 'RUNNING').length;
-  const loadPercentage = jobs.length === 0 ? 0 : Math.min(100, Math.round((runningJobCount / Math.max(jobs.length, 1)) * 100));
+  const queuedJobCount = jobs.filter(j => j.status === 'QUEUED').length;
 
   return (
     <nav id="app-sidebar" className="w-56 border-r border-white/10 bg-[#0D0D0D] p-4 flex flex-col gap-1 select-none shrink-0 overflow-y-auto">
@@ -140,19 +140,21 @@ export const Sidebar: React.FC = () => {
         })}
       </div>
 
-      {/* Bottom telemetry card matching Design HTML */}
+      {/* Bottom telemetry card. Reports real job counts: a "load" percentage
+          derived from running/total-ever-created jobs was neither load nor
+          meaningful, and clamping it to a 50% floor invented utilisation. */}
       <div className="mt-auto pt-4">
         <div className="rounded bg-black/40 border border-white/5 p-2.5 font-mono">
           <div className="flex justify-between text-[10px] font-bold uppercase text-slate-500">
-            <span>Worker Load</span>
+            <span>Job Queue</span>
             <span className={runningJobCount > 0 ? 'text-emerald-400' : 'text-slate-400'}>
-              {runningJobCount > 0 ? `${runningJobCount} Active` : '0%'}
+              {runningJobCount} Running / {queuedJobCount} Queued
             </span>
           </div>
           <div className="mt-1.5 h-1 w-full bg-black rounded-full overflow-hidden">
             <div
               className="h-1 bg-emerald-500 transition-all duration-300 rounded-full"
-              style={{ width: `${Math.max(runningJobCount > 0 ? 50 : 0, loadPercentage)}%` }}
+              style={{ width: `${runningJobCount > 0 ? 100 : 0}%` }}
             />
           </div>
         </div>

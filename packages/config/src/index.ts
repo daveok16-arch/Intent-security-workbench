@@ -11,6 +11,7 @@ export * from './types.js';
 export * from './redaction.js';
 export * from './schema.js';
 export * from './binary_resolver.js';
+export * from './path_containment.js';
 export * from './ai_provider.js';
 export * from './diagnostics.js';
 

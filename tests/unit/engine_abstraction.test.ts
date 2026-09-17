@@ -254,37 +254,38 @@ describe('Phase 0.1 Engine Abstraction Layer Comprehensive Test Suite', () => {
   });
 
   // Requirement 11: Frontend displays backend state
-  it('11. Frontend displays backend state faithfully without hardcoded statuses', async () => {
-    // The frontend must render whatever the backend reports. Comparing the API
-    // contract against live registry state catches a UI that hardcodes a status.
+  it('11. the engine availability payload carries no fabricated status or version', async () => {
+    // The UI renders whatever GET /api/v1/engines returns, so the property that
+    // matters is that the payload itself is honest: an engine that is not
+    // AVAILABLE must ship a null version and a null path, never a build
+    // constant that was never interrogated on this host.
     const registry = new EngineRegistry();
     const checks = await registry.check_all();
-    const byId = new Map(checks.map((c) => [c.engine_id, c]));
-
-    for (const engine of registry.list()) {
-      const real = byId.get(engine.engine_id);
-      if (!real) continue;
-
-      // Simulate the payload the frontend receives from GET /api/v1/engines.
-      const frontendItem = {
-        engine_id: real.engine_id,
-        name: real.name,
-        status: real.status,
-        version: real.version,
-        detected_path: real.detected_path,
-      };
-
-      expect(frontendItem.status).toBe(real.status);
-      if (real.status === EngineAvailabilityStatus.AVAILABLE) {
-        expect(frontendItem.detected_path).toBeTruthy();
-      } else {
-        expect(frontendItem.version).toBeNull();
-        expect(frontendItem.detected_path).toBeNull();
-      }
-    }
-
-    // The registry must expose real, non-fabricated statuses for every engine.
     expect(checks.length).toBeGreaterThanOrEqual(9);
+
+    for (const check of checks) {
+      if (check.status === EngineAvailabilityStatus.AVAILABLE) {
+        expect(check.detected_path).toBeTruthy();
+        continue;
+      }
+      expect(check.version).toBeNull();
+      expect(check.detected_path).toBeNull();
+      expect(check.error).toBeTruthy();
+    }
+  });
+
+  // Requirement 11b: a result produced by an unavailable engine must not claim
+  // the engine's declared build version.
+  it('11b. an unavailable engine reports no version on its execution result', async () => {
+    const engine = new SemgrepEngine('intent-nonexistent-semgrep-binary');
+    const availability = await engine.check_availability();
+    expect(availability.status).toBe(EngineAvailabilityStatus.NOT_INSTALLED);
+
+    const result = await engine.execute('tgt-1', 'scan', {});
+    expect(result.status).toBe(EngineResultStatus.UNAVAILABLE);
+    // The declared version is a build constant, not host evidence.
+    expect(result.engine_version).toBe('unknown');
+    expect(result.findings).toHaveLength(0);
   });
 
   // Requirement 12: No mock findings exist

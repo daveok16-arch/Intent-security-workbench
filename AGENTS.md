@@ -8,14 +8,33 @@ Phase plan and architecture live in `docs/` (`ARCHITECTURE.md`, `PHASES.md`, `EN
 ## How the repository behaves (important)
 - **Anti-fabrication mandate**: every engine must report genuine availability. Missing tools return
   `NOT_INSTALLED` / `UNAVAILABLE` with exit code 127 and zero findings. Never stub results.
-- **The test suite is host-independent by design.** It passes both with and without
-  slither/angr/clarinet installed. Negative-availability tests construct engines with a pinned
-  binary name that cannot exist (e.g. `new SlitherEngine('intent-nonexistent-slither-binary')`), so
-  they assert the anti-fabrication invariant rather than the developer's installed toolchain.
-  Do not add assertions that depend on a tool being absent from the host.
+- **The suite is scored against the host toolchain, not fixed.** The engine-dependent tests
+  assert whatever the host genuinely reports, so the pass count moves with what is installed:
+  a bare host passes fewer tests than a provisioned one. Treat "296 tests" as an upper bound.
+  - Most tests are host-independent because they construct engines with a pinned binary name
+    that cannot exist (e.g. `new SlitherEngine('intent-nonexistent-slither-binary')`) and assert
+    the anti-fabrication invariant rather than the developer's toolchain. Keep writing them that
+    way.
+  - However, tests in `tests/unit/static_analysis.test.ts`, `tests/unit/formal_verification.test.ts`,
+    `tests/unit/engine_availability.test.ts`, `tests/unit/dynamic_verification.test.ts` and
+    `tests/integration/phase5_dynamic_verification.test.ts` assert that real binaries *are*
+    present, so they fail on a host without semgrep / z3 / forge / anvil. Six such failures are
+    expected on a bare checkout. Do NOT add new assertions that depend on a tool being installed
+    or absent without saying so here.
 - Binaries are resolved by `packages/config/src/binary_resolver.ts`, which searches `PATH` plus
   standard tool directories (`~/.foundry/bin`, `~/.local/bin`, `~/.cargo/bin`, `/usr/local/bin`,
   `./usr/local/bin`, `./node_modules/.bin`). Engines must not rely on bare `which`.
+- **Server-controlled fields are not client-writable.** `authorization_status`, `scope_status`,
+  `source_acquisition_status` and `source_hash` on a Target, and `status` / `freshness_status` on
+  a Program, decide whether the pre-flight gate permits an investigation. They are set only by
+  `evaluateTargetScope()`, `updateTargetSourceStatus()` and source acquisition. `updateTarget` /
+  `updateProgram` reject any key outside their allowlist, and the PATCH routes filter bodies
+  through `sanitizeTargetWrite` / `sanitizeProgramWrite`. Do not reintroduce a raw `req.body`
+  spread into a stored record.
+- **Evidence carries provenance.** Artifacts produced internally default to
+  `ArtifactProvenance.MACHINE_VERIFIABLE`; bytes accepted from a caller via `POST /api/evidence`
+  are stamped `CLIENT_SUPPLIED`, and only machine-verifiable evidence satisfies the
+  VALIDATED / CONFIRMED transition. A hash proves integrity, never origin.
 
 ## Toolchain setup
 Binaries are found without exporting PATH, but installing them is still required for the engines to

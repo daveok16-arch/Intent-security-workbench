@@ -18,9 +18,11 @@ produce genuine machine-verifiable evidence.
 - Artifacts carry real SHA-256 digests and byte sizes, computed from their actual content.
 - Engines that never executed report `duration_ms: 0`; no timing is invented.
 
-Because of this, the test suite asserts against real host binaries. Tests covering
-Slither, Angr, CodeQL and Clarinet assert `NOT_INSTALLED`, since those engines are
-deliberate Phase 1/2 placeholders (see `docs/PHASES.md`) and execute no analysis yet.
+Because of this, the test suite asserts against whatever the host genuinely reports. The
+pass count therefore depends on the installed toolchain: a bare checkout fails six tests
+that require `forge`/`anvil`, and passes the rest. Engines for Slither, Angr and CodeQL
+report `NOT_INSTALLED` until their binaries are present; Semgrep, Z3, Tree-sitter, Spectral
+and git run for real. See `AGENTS.md` for the exact matrix.
 
 ## Architecture
 

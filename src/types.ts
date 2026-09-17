@@ -600,3 +600,23 @@ export interface SystemStatus {
   engines_unavailable: number;
   connected_websockets: number;
 }
+
+/**
+ * Reported build identity from GET /api/version. Rendered instead of a
+ * hardcoded version string so the UI cannot claim a release the backend is not
+ * running.
+ */
+export interface BuildInfo {
+  api_version: string;
+  phase_0_constraint?: string;
+}
+
+/**
+ * Diagnostic snapshot from GET /api/system/diagnostics. Used to drive service
+ * lamps from real state rather than an unconditional green dot.
+ */
+export interface ServiceDiagnostics {
+  database?: { status?: string; configured?: boolean } | string;
+  redis?: { status?: string; configured?: boolean } | string;
+  [key: string]: any;
+}

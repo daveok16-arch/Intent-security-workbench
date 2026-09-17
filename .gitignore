@@ -9,3 +9,15 @@ coverage/
 .env.local
 .env.*.local
 !.env.example
+
+# Generated at runtime by tests and by real investigations. Writing these into
+# the working tree made every test run dirty `git status` and left untracked
+# snapshot/log files behind. Tests that need persistence should use os.tmpdir().
+storage/investigations/
+data/sources/
+
+# Foundry build outputs and vendored dependencies produced when the
+# dynamic-verification fixtures are compiled.
+fixtures/**/out/
+fixtures/**/cache/
+fixtures/**/lib/

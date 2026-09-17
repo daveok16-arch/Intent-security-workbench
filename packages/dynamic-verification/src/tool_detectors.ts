@@ -12,7 +12,7 @@
  * - Never return successful execution when the binary is missing.
  */
 
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 import { resolveExecutable } from '../../config/src/binary_resolver.js';
 import { ToolDetectionResult } from './types.js';
 
@@ -45,7 +45,7 @@ export class ToolDetector {
     }
 
     try {
-      const output = execSync(`"${foundPath}" --version`, {
+      const output = execFileSync(foundPath, ['--version'], {
         encoding: 'utf-8',
         timeout: 4000,
         stdio: ['pipe', 'pipe', 'pipe'],
@@ -100,7 +100,7 @@ export class ToolDetector {
     }
 
     try {
-      const output = execSync(`"${foundPath}" --version`, {
+      const output = execFileSync(foundPath, ['--version'], {
         encoding: 'utf-8',
         timeout: 4000,
         stdio: ['pipe', 'pipe', 'pipe'],
@@ -154,7 +154,7 @@ export class ToolDetector {
     }
 
     try {
-      const output = execSync(`"${foundPath}" --version`, {
+      const output = execFileSync(foundPath, ['--version'], {
         encoding: 'utf-8',
         timeout: 4000,
         stdio: ['pipe', 'pipe', 'pipe'],

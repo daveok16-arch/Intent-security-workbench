@@ -104,9 +104,9 @@ export class StaticAnalysisEngine extends BaseEngine {
       }));
 
       const artifacts: EngineArtifact[] = [
-        ...pipelineResult.treesitter.artifacts_created.map(id =>
-          this.describeArtifact(id, 'AST', `ast/${id}`)
-        ),
+        ...pipelineResult.treesitter.artifacts_created
+          .map(id => this.describeArtifact(id, 'AST', `ast/${id}`))
+          .filter((a): a is EngineArtifact => a !== null),
         ...(pipelineResult.semgrep.stdout_artifact_id
           ? [
               this.describeArtifact(
@@ -114,7 +114,7 @@ export class StaticAnalysisEngine extends BaseEngine {
                 'ENGINE_STDOUT',
                 `stdout/${pipelineResult.semgrep.stdout_artifact_id}`
               ),
-            ]
+            ].filter((a): a is EngineArtifact => a !== null)
           : []),
       ];
 
@@ -137,6 +137,8 @@ export class StaticAnalysisEngine extends BaseEngine {
         id: `res-${this.engine_id}-${Date.now()}`,
         engine_id: this.engine_id,
         engine_name: this.name,
+        // This engine composes Tree-sitter and Semgrep rather than probing its
+        // own binary, so `version` is the pipeline's own build version.
         engine_version: this.version,
         status: succeeded ? EngineResultStatus.SUCCESS : EngineResultStatus.FAILED,
         target_id: targetId,

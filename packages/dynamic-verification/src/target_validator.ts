@@ -57,6 +57,56 @@ export class TargetValidator {
   }
 
   /**
+   * True when the host is loopback, a known local alias, or a private-range IP.
+   * Matching is label-aware: `evil-localhost.com` is not local, whereas
+   * `anvil.localhost` is.
+   */
+  private static isLocalHostname(hostname: string): boolean {
+    const host = hostname.toLowerCase().replace(/^\[|\]$/g, '');
+    if (this.LOCAL_HOSTS.some((h) => host === h || host.endsWith(`.${h}`))) {
+      return true;
+    }
+    return this.isPrivateOrLoopbackAddress(host);
+  }
+
+  /**
+   * True for loopback and RFC1918/ULA addresses. Anything else on the network is
+   * a third-party host that dynamic verification must not contact.
+   */
+  private static isPrivateOrLoopbackAddress(host: string): boolean {
+    const v4 = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+    if (v4) {
+      const [a, b] = [parseInt(v4[1], 10), parseInt(v4[2], 10)];
+      if (v4.slice(1).some((o) => parseInt(o, 10) > 255)) return false;
+      return (
+        a === 127 ||
+        a === 10 ||
+        (a === 172 && b >= 16 && b <= 31) ||
+        (a === 192 && b === 168) ||
+        a === 0
+      );
+    }
+    // IPv6 loopback and unique-local prefixes.
+    if (host === '::1' || host === '::') return true;
+    if (/^f[cd][0-9a-f]{2}:/i.test(host)) return true;
+    if (/^fe80:/i.test(host)) return true;
+    return false;
+  }
+
+  /**
+   * Distinguishes a filesystem path (always local) from a network host.
+   */
+  private static looksLikeLocalPath(value: string): boolean {
+    if (/^(\.{0,2}\/)/.test(value)) return true;
+    if (/^[a-zA-Z]:[\\/]/.test(value)) return true; // Windows drive
+    if (/^\\\\/.test(value)) return true; // UNC
+    if (value.includes('://')) return false;
+    // A bare token with no dot and no slash is an identifier/path, not a host.
+    if (!value.includes('.') && !value.includes(':')) return true;
+    return false;
+  }
+
+  /**
    * Validate that the requested dynamic verification environment and target
    * are strictly isolated and not a production or unauthorized remote target.
    */
@@ -81,28 +131,25 @@ export class TargetValidator {
     if (targetUrlOrPath) {
       const trimmed = targetUrlOrPath.trim();
 
-      // Check for remote HTTP/HTTPS production targets
+      // Reject explicit non-HTTP schemes outright. An unvalidated scheme (ws,
+      // file, ftp, ...) previously slipped past the production check entirely.
+      const schemeMatch = trimmed.match(/^([a-zA-Z][a-zA-Z0-9+.-]*):\/\//);
+      if (schemeMatch && !/^https?$/i.test(schemeMatch[1])) {
+        return {
+          valid: false,
+          environment,
+          target_id: targetId,
+          target_url: targetUrlOrPath,
+          rejection_reason: 'UNAUTHORIZED_PRODUCTION_TARGET',
+          error: `UNAUTHORIZED_PRODUCTION_TARGET: scheme '${schemeMatch[1]}' is not permitted for dynamic execution. Only http/https to an isolated local endpoint is allowed.`,
+        };
+      }
+
       if (/^https?:\/\//i.test(trimmed)) {
+        let parsed: URL;
         try {
-          const parsed = new URL(trimmed);
-          const hostname = parsed.hostname.toLowerCase();
-
-          // Reject non-local hostnames unless testnet or explicitly mock
-          const isLocal = this.LOCAL_HOSTS.some(
-            (h) => hostname === h || hostname.endsWith(`.${h}`)
-          );
-
-          if (!isLocal && !hostname.includes('testnet')) {
-            return {
-              valid: false,
-              environment,
-              target_id: targetId,
-              target_url: targetUrlOrPath,
-              rejection_reason: 'UNAUTHORIZED_PRODUCTION_TARGET',
-              error: `UNAUTHORIZED_PRODUCTION_TARGET: Target URL '${trimmed}' refers to an external or production host. Dynamic verification requires an isolated local environment (LOCAL_SOURCE, LOCAL_NODE, LOCAL_FORK, or CONTROLLED_TESTNET).`,
-            };
-          }
-        } catch (e: any) {
+          parsed = new URL(trimmed);
+        } catch {
           return {
             valid: false,
             environment,
@@ -112,28 +159,47 @@ export class TargetValidator {
             error: `MALFORMED_URL: Target address '${trimmed}' is not a valid URL or path.`,
           };
         }
-      }
 
-      // Check for public IP addresses
-      const ipv4Match = trimmed.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})/);
-      if (ipv4Match) {
-        const firstOctet = parseInt(ipv4Match[1], 10);
-        const isLoopback = firstOctet === 127;
-        const isPrivate =
-          firstOctet === 10 ||
-          (firstOctet === 172 && parseInt(ipv4Match[2], 10) >= 16 && parseInt(ipv4Match[2], 10) <= 31) ||
-          (firstOctet === 192 && parseInt(ipv4Match[2], 10) === 168);
-
-        if (!isLoopback && !isPrivate) {
+        if (!this.isLocalHostname(parsed.hostname)) {
           return {
             valid: false,
             environment,
             target_id: targetId,
             target_url: targetUrlOrPath,
             rejection_reason: 'UNAUTHORIZED_PRODUCTION_TARGET',
-            error: `UNAUTHORIZED_PRODUCTION_TARGET: Public IP '${trimmed}' is prohibited for dynamic execution.`,
+            error: `UNAUTHORIZED_PRODUCTION_TARGET: Target URL '${trimmed}' refers to an external or production host. Dynamic verification requires an isolated local environment (LOCAL_SOURCE, LOCAL_NODE, LOCAL_FORK, or CONTROLLED_TESTNET).`,
           };
         }
+      } else if (!this.looksLikeLocalPath(trimmed)) {
+        // A schemeless hostname such as `api.production.example.com` bypassed
+        // the URL check and reached the runner. Treat anything that is not a
+        // recognizable local path as a remote host.
+        const hostOnly = trimmed.split('/')[0].split(':')[0];
+        if (hostOnly && !this.isLocalHostname(hostOnly)) {
+          return {
+            valid: false,
+            environment,
+            target_id: targetId,
+            target_url: targetUrlOrPath,
+            rejection_reason: 'UNAUTHORIZED_PRODUCTION_TARGET',
+            error: `UNAUTHORIZED_PRODUCTION_TARGET: Target address '${trimmed}' is not a local endpoint. Dynamic verification requires an isolated local environment.`,
+          };
+        }
+      }
+
+      // Check for public IP addresses
+      const ipv4Match = trimmed.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})/);
+      if (ipv4Match && !this.isPrivateOrLoopbackAddress(
+        `${ipv4Match[1]}.${ipv4Match[2]}.${ipv4Match[3]}.${ipv4Match[4]}`
+      )) {
+        return {
+          valid: false,
+          environment,
+          target_id: targetId,
+          target_url: targetUrlOrPath,
+          rejection_reason: 'UNAUTHORIZED_PRODUCTION_TARGET',
+          error: `UNAUTHORIZED_PRODUCTION_TARGET: Public IP '${trimmed}' is prohibited for dynamic execution.`,
+        };
       }
     }
 

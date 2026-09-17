@@ -1,0 +1,6 @@
+[2026-09-17T18:04:37.428Z] Initiating source acquisition for target 'facts-target' (tgt-1789668277427-xy06m)
+[2026-09-17T18:04:37.428Z] Repository source: /workspace/project/.test_fixtures/ai_hunt_1789668277393_a8jm
+[2026-09-17T18:04:37.428Z] Detected local directory source at /workspace/project/.test_fixtures/ai_hunt_1789668277393_a8jm. Copying repository files...
+[2026-09-17T18:04:37.440Z] Resolved local Git commit SHA: d37905afec19ebc2e60a82a7ddda4fc9e6e8ed42
+[2026-09-17T18:04:37.440Z] Computing cryptographic SHA-256 hash over directory tree...
+[2026-09-17T18:04:37.440Z] Computed source tree hash: 25f903994761938adf0308613718cce5adcf218af3c449dcf817502455e025c7

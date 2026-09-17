@@ -239,24 +239,90 @@ export abstract class BaseEngine implements IEngine {
   }
 
   /**
+   * Version string to report on an EngineResult.
+   *
+   * The declared `version` is a build constant describing what the engine
+   * supports, not evidence that this binary is installed. Reporting it on a
+   * result produced by a missing binary would assert a version that was never
+   * interrogated on the host. When availability is anything other than
+   * AVAILABLE, report 'unknown' instead.
+   */
+  protected engineVersionFor(availability?: EngineAvailability | null): string {
+    if (availability?.status === EngineAvailabilityStatus.AVAILABLE) {
+      return availability.version || this.version;
+    }
+    return 'unknown';
+  }
+
+  /**
+   * Builds an honest FAILED result for an operation that did not succeed.
+   * `duration_ms` reflects real elapsed time and `exit_code` is non-zero, so no
+   * timing or success is invented. Engines use this instead of swallowing an
+   * error and reporting SUCCESS with exit code 0.
+   */
+  protected failedResult(
+    targetId: string,
+    context: Record<string, any>,
+    command: string,
+    startedAt: string,
+    completedAt: string,
+    startedMs: number,
+    error: string,
+    availability?: EngineAvailability | null
+  ): EngineResult {
+    return {
+      id: `res-${this.engine_id}-${Date.now()}`,
+      engine_id: this.engine_id,
+      engine_name: this.name,
+      engine_version: availability?.version || this.version,
+      status: EngineResultStatus.FAILED,
+      target_id: targetId,
+      investigation_id: context.investigation_id,
+      command,
+      working_directory: context.working_directory || process.cwd(),
+      started_at: startedAt,
+      completed_at: completedAt,
+      duration_ms: Math.max(0, startedMs ? Date.now() - startedMs : 0),
+      exit_code: 1,
+      stdout: '',
+      stderr: error,
+      findings: [],
+      artifacts: [],
+      environment: this.getEnvironmentInfo(availability?.detected_path),
+      error: `ENGINE_EXECUTION_FAILED: ${error}`,
+    };
+  }
+
+  /**
    * Builds an EngineArtifact descriptor from an artifact id, using the genuine
-   * SHA-256 digest and byte size recorded at storage time. Never invents a hash.
+   * SHA-256 digest and byte size recorded at storage time.
+   *
+   * Returns null when the id is not a registered artifact. Publishing a
+   * descriptor with an empty digest and an invented `created_at` would assert
+   * provenance the engine cannot actually demonstrate, which is exactly what the
+   * anti-fabrication mandate forbids. Callers filter these out of their artifact
+   * lists; an engine that needs to report output must register it first with
+   * `registerArtifact()`.
    */
   protected describeArtifact(
     id: string,
     type: string,
     artifactPath: string,
     mimeType = 'application/json'
-  ): EngineArtifact {
+  ): EngineArtifact | null {
     const registered = registeredEvidenceArtifacts.get(id);
+    if (!registered?.artifact) {
+      return null;
+    }
+    const { artifact } = registered;
     return {
       id,
       type,
-      path: registered?.artifact.path || artifactPath,
-      sha256: registered?.artifact.sha256 || '',
-      size: registered?.artifact.size_bytes ?? 0,
-      mime_type: registered?.artifact.mime_type || mimeType,
-      created_at: registered?.artifact.created_at || new Date().toISOString(),
+      path: artifact.path || artifactPath,
+      sha256: artifact.sha256,
+      size: artifact.size_bytes,
+      mime_type: artifact.mime_type || mimeType,
+      created_at: artifact.created_at,
     };
   }
 
