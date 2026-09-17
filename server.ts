@@ -21,7 +21,7 @@ import { SandboxSecurityEnforcer, DEFAULT_SANDBOX_POLICY } from './sandbox/sandb
 import { getProgramAdapter } from './adapters/programs/index.js';
 import { getTargetAdapter } from './adapters/targets/index.js';
 import { verifyArtifactIntegrity } from './packages/evidence/src/index.js';
-import { ScopeAssetType, ScopeInclusionStatus } from './packages/core/src/index.js';
+import { ScopeAssetType, ScopeInclusionStatus, ArtifactProvenance } from './packages/core/src/index.js';
 import {
   globalCandidateStore,
   globalSecurityRuleRegistry,
@@ -882,6 +882,10 @@ app.post(['/api/v1/evidence', '/api/evidence'], (req, res) => {
       path: customPath || path_or_reference,
       mime_type,
       metadata,
+      // This route accepts bytes from the caller. The workbench hashes them, but
+      // that proves integrity only, not origin — so they must not satisfy the
+      // machine-verifiable gate to VALIDATED / CONFIRMED.
+      provenance: ArtifactProvenance.CLIENT_SUPPLIED,
     });
 
     broadcastEvent('evidence_created', artifact);

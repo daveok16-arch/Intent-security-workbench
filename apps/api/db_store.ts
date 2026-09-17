@@ -12,6 +12,7 @@ import {
   Program, Target, Investigation, AnalysisJob, EvidenceArtifact, Finding,
   FindingStatus, JobStatus, InvestigationStatus, SourceAcquisitionStatus,
   BountyPlatform, TargetType, Ecosystem, Severity, Confidence, ArtifactType,
+  ArtifactProvenance,
   EvidenceEvent, EvidenceEventType, SourceSnapshot, SourceSnapshotStatus,
   ProvenanceGraph, ProvenanceChain, ScopeEntry, ScopeInclusionStatus, ScopeAssetType,
   ProgramStatus, ProgramFreshnessStatus, TargetAuthorizationStatus, TargetScopeStatus,
@@ -506,9 +507,16 @@ export class DatabaseStore {
     mime_type?: string;
     metadata?: Record<string, any>;
     actor?: string;
+    /**
+     * Defaults to MACHINE_VERIFIABLE because internal callers only invoke this
+     * after observing a real process. API surfaces that accept raw payloads must
+     * pass CLIENT_SUPPLIED explicitly.
+     */
+    provenance?: ArtifactProvenance | string;
   }): EvidenceArtifact {
     const id = params.id || `art-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
     const producerVersion = params.producer_version || '1.0.0';
+    const provenance = params.provenance || ArtifactProvenance.MACHINE_VERIFIABLE;
     
     // Write artifact to storage
     let storedPath = params.path || params.path_or_reference;
@@ -552,6 +560,10 @@ export class DatabaseStore {
       mime_type: params.mime_type,
       metadata: params.metadata,
     });
+
+    // Stamp provenance so the finding state machine can distinguish genuine
+    // engine-produced evidence from payloads the workbench merely hashed.
+    artifact.provenance = provenance;
 
     this.evidence.set(id, artifact);
     this.rawArtifactStorage.set(id, rawContent);
@@ -766,8 +778,24 @@ export class DatabaseStore {
     const finding = this.findings.get(id);
     if (!finding) throw new Error(`Finding ${id} not found.`);
 
-    const hasArtifacts = (finding.evidence_artifact_ids && finding.evidence_artifact_ids.length > 0);
-    const validation = validateFindingTransition(finding.status, targetStatus, hasArtifacts);
+    const linked = (finding.evidence_artifact_ids || [])
+      .map(eid => this.evidence.get(eid))
+      .filter((a): a is EvidenceArtifact => Boolean(a));
+
+    const hasArtifacts = linked.length > 0;
+    // Only artifacts produced by a real engine execution or an internal
+    // subsystem count as machine-verifiable. Caller-supplied payloads that the
+    // workbench merely hashed must not satisfy the terminal gate.
+    const hasMachineVerifiableEvidence =
+      hasArtifacts &&
+      linked.some(a => (a.provenance || ArtifactProvenance.MACHINE_VERIFIABLE) === ArtifactProvenance.MACHINE_VERIFIABLE);
+
+    const validation = validateFindingTransition(
+      finding.status,
+      targetStatus,
+      hasArtifacts,
+      hasMachineVerifiableEvidence
+    );
 
     if (!validation.allowed) {
       throw new Error(`State machine error: ${validation.reason}`);

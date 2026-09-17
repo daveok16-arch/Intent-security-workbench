@@ -59,7 +59,7 @@ export class Z3Detector {
     }
 
     try {
-      const versionOutput = execSync(`"${executablePath}" --version`, {
+      const versionOutput = execFileSync(executablePath, ['--version'], {
         encoding: 'utf-8',
         timeout: 4000,
         stdio: ['ignore', 'pipe', 'pipe'],
