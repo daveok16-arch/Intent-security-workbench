@@ -102,6 +102,27 @@ export class SourceSnapshotService {
   }
 
   /**
+   * Registers a snapshot as ACQUIRED against a directory that already exists on
+   * disk. Delegates to `acquireFromLocalDirectory`, which computes the real tree
+   * hash from the actual bytes. Used when source was obtained by a route other
+   * than a git clone — for example verified source fetched from a block explorer.
+   */
+  public registerAcquiredPath(snapshotId: string, dirPath: string): SourceSnapshot {
+    const snap = this.snapshots.get(snapshotId);
+    if (!snap) throw new Error(`Snapshot '${snapshotId}' not found.`);
+    if (!fs.existsSync(dirPath) || !fs.statSync(dirPath).isDirectory()) {
+      throw new Error(`Source directory '${dirPath}' does not exist or is not a directory.`);
+    }
+
+    const acquired = this.acquireFromLocalDirectory(snapshotId, dirPath);
+    acquired.metadata = {
+      ...(acquired.metadata || {}),
+      acquisition_note: 'registered from an existing verified source directory',
+    };
+    return acquired;
+  }
+
+  /**
    * Hashes a local directory tree deterministically.
    */
   public static computeDirectoryTreeHash(dirPath: string): string {
@@ -153,6 +174,10 @@ export class SourceSnapshotService {
     snap.source_hash = sourceHash;
     snap.acquired_at = now;
     snap.updated_at = now;
+    // `storage_path` is the field the analysis routes resolve source from; a
+    // snapshot that records its directory only in metadata looks acquired but
+    // can never be analysed.
+    snap.storage_path = dirPath;
     snap.metadata = {
       ...snap.metadata,
       source_directory: dirPath,

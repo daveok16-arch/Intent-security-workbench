@@ -997,6 +997,7 @@ app.get('/api/v1/snapshots/:id', (req, res) => {
 app.post('/api/v1/snapshots', async (req, res) => {
   try {
     const { target_id, investigation_id, repository_url, commit_hash, branch, acquisition_method, content, filename, metadata } = req.body;
+    const storage_path = req.body.storage_path || req.body.path;
     if (!target_id || !acquisition_method) {
       return res.status(400).json({ error: 'target_id and acquisition_method are required.' });
     }
@@ -1011,11 +1012,35 @@ app.post('/api/v1/snapshots', async (req, res) => {
       metadata,
     });
 
-    if (content) {
+    // An explicitly supplied directory used to be dropped on the floor, leaving
+    // the snapshot permanently PENDING with no path. The pre-flight gate reads
+    // the target's acquisition status, so such a snapshot could never make a
+    // target analysable — the caller had no way to register source that was
+    // already on disk (for example verified source fetched from a block
+    // explorer rather than cloned from git).
+    let result = snap;
+    if (typeof storage_path === 'string' && storage_path.trim()) {
+      const resolved = path.resolve(storage_path.trim());
+      const candidateRoots = [
+        path.resolve(process.cwd(), 'data', 'sources'),
+        path.resolve(process.cwd(), 'storage'),
+      ];
+      const containment = assertContainedDirectory(resolved, candidateRoots);
+      if (!containment.ok || !containment.resolved) {
+        return res.status(403).json({
+          error:
+            `storage_path '${storage_path}' is not permitted: ${containment.error} ` +
+            `Source directories must live under ${candidateRoots.join(' or ')}.`,
+          code: 'SOURCE_PATH_NOT_AUTHORIZED',
+        });
+      }
+      result = globalDB.registerAcquiredSnapshotPath(snap.id, containment.resolved);
+    } else if (content) {
       await globalDB.acquireSourceSnapshotContent(snap.id, content, filename);
+      result = globalDB.getSourceSnapshot(snap.id) || snap;
     }
 
-    res.status(201).json(snap);
+    res.status(201).json(result);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }

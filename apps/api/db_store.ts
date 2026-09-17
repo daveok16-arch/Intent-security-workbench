@@ -589,6 +589,39 @@ export class DatabaseStore {
     return snap;
   }
 
+  /**
+   * Marks a snapshot ACQUIRED against an existing on-disk directory and reflects
+   * the acquisition on its target, so the pre-flight gate can pass. The tree hash
+   * is computed from the real bytes, never supplied by the caller.
+   */
+  registerAcquiredSnapshotPath(snapshotId: string, dirPath: string): SourceSnapshot {
+    const snap = globalSourceSnapshotService.registerAcquiredPath(snapshotId, dirPath);
+
+    const target = this.targets.get(snap.target_id);
+    if (target) {
+      target.source_acquisition_status = SourceAcquisitionStatus.SOURCE_ACQUIRED;
+      if (snap.source_hash) target.source_hash = snap.source_hash;
+      target.updated_at = new Date().toISOString();
+      this.targets.set(target.id, target);
+    }
+
+    if (snap.investigation_id) {
+      globalEvidenceEventManager.recordEvent({
+        investigation_id: snap.investigation_id,
+        event_type: EvidenceEventType.SOURCE_ACQUIRED,
+        actor: 'source-acquisition-engine',
+        producer: 'source-manager',
+        producer_version: '1.0.0',
+        metadata: {
+          snapshot_id: snap.id,
+          source_hash: snap.source_hash,
+          storage_path: snap.storage_path,
+        },
+      });
+    }
+    return snap;
+  }
+
   getSourceSnapshot(id: string): SourceSnapshot | undefined {
     return globalSourceSnapshotService.getSnapshot(id);
   }
