@@ -93,7 +93,7 @@ export class ClarinetEngine extends BaseEngine {
         id: `res-${this.engine_id}-${Date.now()}`,
         engine_id: this.engine_id,
         engine_name: this.name,
-        engine_version: this.version,
+        engine_version: this.engineVersionFor(avail),
         status: EngineResultStatus.UNAVAILABLE,
         target_id: targetId,
         investigation_id: context.investigation_id,

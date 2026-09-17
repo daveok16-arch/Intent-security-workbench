@@ -239,6 +239,22 @@ export abstract class BaseEngine implements IEngine {
   }
 
   /**
+   * Version string to report on an EngineResult.
+   *
+   * The declared `version` is a build constant describing what the engine
+   * supports, not evidence that this binary is installed. Reporting it on a
+   * result produced by a missing binary would assert a version that was never
+   * interrogated on the host. When availability is anything other than
+   * AVAILABLE, report 'unknown' instead.
+   */
+  protected engineVersionFor(availability?: EngineAvailability | null): string {
+    if (availability?.status === EngineAvailabilityStatus.AVAILABLE) {
+      return availability.version || this.version;
+    }
+    return 'unknown';
+  }
+
+  /**
    * Builds an honest FAILED result for an operation that did not succeed.
    * `duration_ms` reflects real elapsed time and `exit_code` is non-zero, so no
    * timing or success is invented. Engines use this instead of swallowing an

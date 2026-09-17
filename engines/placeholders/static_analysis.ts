@@ -137,6 +137,8 @@ export class StaticAnalysisEngine extends BaseEngine {
         id: `res-${this.engine_id}-${Date.now()}`,
         engine_id: this.engine_id,
         engine_name: this.name,
+        // This engine composes Tree-sitter and Semgrep rather than probing its
+        // own binary, so `version` is the pipeline's own build version.
         engine_version: this.version,
         status: succeeded ? EngineResultStatus.SUCCESS : EngineResultStatus.FAILED,
         target_id: targetId,
