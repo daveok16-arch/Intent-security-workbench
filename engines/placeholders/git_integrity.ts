@@ -59,14 +59,30 @@ export class GitSourceIntegrityEngine extends BaseEngine {
       let cmd = `git ${operation}`;
 
       if (operation === 'status') {
+        // A workspace that is not a git repository is a genuine failure of the
+        // requested operation. Previously the error was swallowed, the git
+        // version was written to stdout instead, and the run was reported as
+        // SUCCESS with exit_code 0 — asserting work that never happened.
         try {
           stdout = execFileSync('git', ['status', '--short'], {
             encoding: 'utf-8',
             timeout: 5000,
             cwd: context.working_directory || process.cwd(),
           });
-        } catch {
-          stdout = 'Workspace root is not a git repository. Verified host git: ' + execFileSync('git', ['--version'], { encoding: 'utf-8' }).trim();
+        } catch (err: any) {
+          const endTime = new Date().toISOString();
+          return this.failedResult(
+            targetId,
+            context,
+            'git status --short',
+            startTime,
+            endTime,
+            startMs,
+            `git status failed in '${context.working_directory || process.cwd()}': ${String(
+              err?.stderr || err?.message || err
+            ).trim()}`,
+            avail
+          );
         }
       } else if (operation === 'verify_commit') {
         try {
@@ -75,8 +91,20 @@ export class GitSourceIntegrityEngine extends BaseEngine {
             timeout: 5000,
             cwd: context.working_directory || process.cwd(),
           });
-        } catch {
-          stdout = 'Verified host git engine runtime: ' + execFileSync('git', ['--version'], { encoding: 'utf-8' }).trim();
+        } catch (err: any) {
+          const endTime = new Date().toISOString();
+          return this.failedResult(
+            targetId,
+            context,
+            'git log -1 --oneline',
+            startTime,
+            endTime,
+            startMs,
+            `git log failed in '${context.working_directory || process.cwd()}': ${String(
+              err?.stderr || err?.message || err
+            ).trim()}`,
+            avail
+          );
         }
       } else {
         cmd = 'git --version';

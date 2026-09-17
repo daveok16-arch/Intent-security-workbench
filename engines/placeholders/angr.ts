@@ -166,7 +166,10 @@ export class AngrEngine extends BaseEngine {
       run.stdout
     );
     if (artifactId) {
-      artifacts.push(this.describeArtifact(artifactId, 'ENGINE_OUTPUT', `${this.engine_id}/analysis.json`));
+      {
+        const art = this.describeArtifact(artifactId, 'ENGINE_OUTPUT', `${this.engine_id}/analysis.json`);
+        if (art) artifacts.push(art);
+      }
     }
 
     return {

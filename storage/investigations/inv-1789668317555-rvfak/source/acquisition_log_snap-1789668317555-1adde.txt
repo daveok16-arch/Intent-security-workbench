@@ -1,0 +1,6 @@
+[2026-09-17T18:05:17.555Z] Initiating source acquisition for target 'dedup-target' (tgt-1789668317554-jtryo)
+[2026-09-17T18:05:17.555Z] Repository source: /workspace/project/.test_fixtures/ai_hunt_1789668317530_x2tv
+[2026-09-17T18:05:17.555Z] Detected local directory source at /workspace/project/.test_fixtures/ai_hunt_1789668317530_x2tv. Copying repository files...
+[2026-09-17T18:05:17.561Z] Resolved local Git commit SHA: aeb13957b40ace8450408f7ee04a681a7217adca
+[2026-09-17T18:05:17.561Z] Computing cryptographic SHA-256 hash over directory tree...
+[2026-09-17T18:05:17.561Z] Computed source tree hash: 25f903994761938adf0308613718cce5adcf218af3c449dcf817502455e025c7

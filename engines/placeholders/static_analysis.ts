@@ -104,9 +104,9 @@ export class StaticAnalysisEngine extends BaseEngine {
       }));
 
       const artifacts: EngineArtifact[] = [
-        ...pipelineResult.treesitter.artifacts_created.map(id =>
-          this.describeArtifact(id, 'AST', `ast/${id}`)
-        ),
+        ...pipelineResult.treesitter.artifacts_created
+          .map(id => this.describeArtifact(id, 'AST', `ast/${id}`))
+          .filter((a): a is EngineArtifact => a !== null),
         ...(pipelineResult.semgrep.stdout_artifact_id
           ? [
               this.describeArtifact(
@@ -114,7 +114,7 @@ export class StaticAnalysisEngine extends BaseEngine {
                 'ENGINE_STDOUT',
                 `stdout/${pipelineResult.semgrep.stdout_artifact_id}`
               ),
-            ]
+            ].filter((a): a is EngineArtifact => a !== null)
           : []),
       ];
 

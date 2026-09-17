@@ -1,0 +1,9 @@
+{
+  "snapshot_id": "snap-1789668292230-285nk",
+  "target_id": "tgt-1789668292230-y0f4f",
+  "repository_url": "/workspace/project/.test_fixtures/ai_hunt_1789668292206_b9pe",
+  "resolved_commit_sha": "6caf75bfe602e31445fd97932acc9dc17f978060",
+  "source_hash": "25f903994761938adf0308613718cce5adcf218af3c449dcf817502455e025c7",
+  "acquired_at": "2026-09-17T18:04:52.230Z",
+  "provider": "git"
+}

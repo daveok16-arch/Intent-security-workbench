@@ -194,9 +194,9 @@ export class SemgrepEngine extends BaseEngine {
       metadata: c.metadata,
     }));
 
-    const artifacts: EngineArtifact[] = scanRes.artifactIds.map(id =>
-      this.describeArtifact(id, 'ENGINE_OUTPUT', `artifacts/${id}`)
-    );
+    const artifacts: EngineArtifact[] = scanRes.artifactIds
+      .map(id => this.describeArtifact(id, 'ENGINE_OUTPUT', `artifacts/${id}`))
+      .filter((a): a is EngineArtifact => a !== null);
 
     const status = scanRes.execution.status === 'COMPLETED' ? EngineResultStatus.SUCCESS : EngineResultStatus.FAILED;
 

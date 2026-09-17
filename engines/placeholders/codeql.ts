@@ -154,7 +154,10 @@ export class CodeQLEngine extends BaseEngine {
       run.stdout
     );
     if (artifactId) {
-      artifacts.push(this.describeArtifact(artifactId, 'ENGINE_OUTPUT', `${this.engine_id}/analysis.log`));
+      {
+        const art = this.describeArtifact(artifactId, 'ENGINE_OUTPUT', `${this.engine_id}/analysis.log`);
+        if (art) artifacts.push(art);
+      }
     }
 
     return {

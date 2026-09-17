@@ -168,7 +168,9 @@ export class TreeSitterEngine extends BaseEngine {
         },
       }));
 
-      const artifacts: EngineArtifact[] = scan.artifactIds.map(id => this.describeArtifact(id, 'AST', `ast/${id}`));
+      const artifacts: EngineArtifact[] = scan.artifactIds
+        .map(id => this.describeArtifact(id, 'AST', `ast/${id}`))
+        .filter((a): a is EngineArtifact => a !== null);
 
       const stdout = JSON.stringify({
         engine: this.name,
