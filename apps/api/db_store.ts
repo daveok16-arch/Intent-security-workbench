@@ -41,6 +41,130 @@ import {
 import { VerificationResult } from '../../packages/formal-verification/src/types.js';
 import { DynamicVerificationJob } from '../../packages/dynamic-verification/src/types.js';
 
+/**
+ * Server-controlled fields on Target. These encode the authorization and
+ * provenance decisions the platform's pre-flight gate depends on, so they must
+ * never be settable from an API request body. They are written only through the
+ * dedicated internal transitions (`evaluateTargetScope`,
+ * `updateTargetSourceStatus`, source acquisition).
+ */
+const TARGET_PROTECTED_FIELDS = [
+  'id',
+  'authorization_status',
+  'scope_status',
+  'source_acquisition_status',
+  'source_hash',
+] as const;
+
+/**
+ * Fields the target PATCH route may modify. Anything absent from this list is
+ * dropped rather than rejected, so partial updates from older clients keep
+ * working while privileged fields stay unreachable.
+ */
+const TARGET_PATCHABLE_FIELDS = [
+  'name',
+  'target_type',
+  'type',
+  'ecosystem',
+  'identifier',
+  'primary_location',
+  'repository_url',
+  'commit_hash',
+  'branch',
+  'deployment',
+  'deployment_information',
+  'chain',
+  'contract_address',
+  'metadata',
+] as const;
+
+/**
+ * Server-controlled fields on Program, for the same reason: Program.status and
+ * Program.freshness_status feed the investigation gate.
+ */
+const PROGRAM_PROTECTED_FIELDS = [
+  'id',
+  'status',
+  'freshness_status',
+] as const;
+
+const PROGRAM_PATCHABLE_FIELDS = [
+  'name',
+  'platform',
+  'external_id',
+  'external_identifier',
+  'program_url',
+  'organization',
+  'description',
+  'policy_version',
+  'scope',
+  'exclusions',
+  'testing_rules',
+  'disclosure_rules',
+  'bounty_rules',
+  'bounty_policy',
+  'disclosure_policy',
+  'technology',
+  'metadata',
+] as const;
+
+/**
+ * Drops server-controlled keys from a caller-supplied mutation payload.
+ * Returns the filtered object plus the names of the fields that were refused,
+ * so routes can surface the refusal to the caller instead of silently
+ * discarding it.
+ */
+export function sanitizeTargetWrite<T extends Record<string, any>>(
+  payload: T,
+  options: { allowProtected?: boolean } = {}
+): { value: Record<string, any>; rejected: string[] } {
+  return filterWritable(
+    payload,
+    TARGET_PATCHABLE_FIELDS,
+    TARGET_PROTECTED_FIELDS,
+    options.allowProtected
+  );
+}
+
+export function sanitizeProgramWrite<T extends Record<string, any>>(
+  payload: T,
+  options: { allowProtected?: boolean } = {}
+): { value: Record<string, any>; rejected: string[] } {
+  return filterWritable(
+    payload,
+    PROGRAM_PATCHABLE_FIELDS,
+    PROGRAM_PROTECTED_FIELDS,
+    options.allowProtected
+  );
+}
+
+function filterWritable(
+  payload: Record<string, any>,
+  patchable: readonly string[],
+  protectedFields: readonly string[],
+  allowProtected?: boolean
+): { value: Record<string, any>; rejected: string[] } {
+  if (!payload || typeof payload !== 'object') {
+    return { value: {}, rejected: [] };
+  }
+  const rejected: string[] = [];
+  const value: Record<string, any> = {};
+  for (const [key, val] of Object.entries(payload)) {
+    if ((protectedFields as readonly string[]).includes(key)) {
+      if (!allowProtected) {
+        rejected.push(key);
+        continue;
+      }
+      value[key] = val;
+      continue;
+    }
+    if ((patchable as readonly string[]).includes(key) && val !== undefined) {
+      value[key] = val;
+    }
+  }
+  return { value, rejected };
+}
+
 export class DatabaseStore {
   public programs: Map<string, Program> = new Map();
   public targets: Map<string, Target> = new Map();
@@ -122,6 +246,16 @@ export class DatabaseStore {
   updateProgram(id: string, updates: Partial<Program>): Program {
     const prog = this.programs.get(id);
     if (!prog) throw new Error(`Program '${id}' not found.`);
+
+    // status and freshness_status gate the investigation pre-flight check, so
+    // they are server-controlled rather than client-writable.
+    const attempts = Object.keys(updates).filter(k => !PROGRAM_PATCHABLE_FIELDS.includes(k as any));
+    if (attempts.length > 0) {
+      throw new Error(
+        `Cannot update server-controlled program field(s): ${attempts.join(', ')}.`
+      );
+    }
+
     const updated = {
       ...prog,
       ...updates,
@@ -204,6 +338,12 @@ export class DatabaseStore {
   createTarget(data: Omit<Target, 'id' | 'created_at' | 'updated_at' | 'target_type'> & { id?: string; target_type?: TargetType; type?: TargetType; primary_location?: string }): Target {
     const id = data.id || `tgt-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
     const now = new Date().toISOString();
+
+    // A newly registered target starts unauthorized and unverified regardless of
+    // what the caller claims. Authorization status is computed by
+    // evaluateTargetScope() and source state is set by acquisition, so neither
+    // can be seeded from a request body. Without this, a caller could declare a
+    // production asset SOURCE_ACQUIRED with a forged hash at creation time.
     const target: Target = {
       id,
       program_id: data.program_id,
@@ -220,10 +360,10 @@ export class DatabaseStore {
       deployment_information: data.deployment_information || data.deployment || {},
       chain: data.chain,
       contract_address: data.contract_address,
-      source_hash: data.source_hash,
-      source_acquisition_status: data.source_acquisition_status || SourceAcquisitionStatus.SOURCE_NOT_ACQUIRED,
-      authorization_status: data.authorization_status || TargetAuthorizationStatus.NOT_EVALUATED,
-      scope_status: data.scope_status || TargetScopeStatus.NOT_EVALUATED,
+      source_hash: undefined,
+      source_acquisition_status: SourceAcquisitionStatus.SOURCE_NOT_ACQUIRED,
+      authorization_status: TargetAuthorizationStatus.NOT_EVALUATED,
+      scope_status: TargetScopeStatus.NOT_EVALUATED,
       metadata: data.metadata || {},
       created_at: now,
       updated_at: now,
@@ -263,6 +403,20 @@ export class DatabaseStore {
   updateTarget(id: string, updates: Partial<Target>): Target {
     const target = this.targets.get(id);
     if (!target) throw new Error(`Target '${id}' not found.`);
+
+    // Authorization / provenance fields are server-controlled. Callers that
+    // need to change them must use evaluateTargetScope() or
+    // updateTargetSourceStatus(), which record the evidence event that justifies
+    // the transition. Guarding here as well as at the route means a future
+    // caller cannot reopen the hole by passing a raw request body.
+    const attempts = Object.keys(updates).filter(k => !TARGET_PATCHABLE_FIELDS.includes(k as any));
+    if (attempts.length > 0) {
+      throw new Error(
+        `Cannot update server-controlled target field(s): ${attempts.join(', ')}. ` +
+          `Authorization and source state are set by scope evaluation and source acquisition.`
+      );
+    }
+
     const updated = {
       ...target,
       ...updates,
@@ -748,7 +902,15 @@ export class DatabaseStore {
       severity: data.severity,
       status: FindingStatus.CANDIDATE,
       confidence: data.confidence || Confidence.UNVERIFIED,
-      evidence_artifact_ids: data.evidence_artifact_ids || [],
+      // Only link artifacts that actually exist, and only within the finding's own
+      // investigation. A finding otherwise could be born already satisfying the
+      // VALIDATED/CONFIRMED gate using IDs that were never created, or that belong
+      // to an unrelated investigation.
+      evidence_artifact_ids: (data.evidence_artifact_ids || []).filter(
+        (eid: string) =>
+          this.evidence.has(eid) &&
+          this.evidence.get(eid)?.investigation_id === data.investigation_id
+      ),
       reproduction_steps: data.reproduction_steps || data.description || '',
       mitigation_notes: data.mitigation_notes || '',
       metadata: {

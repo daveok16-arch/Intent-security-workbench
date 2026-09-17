@@ -13,7 +13,9 @@ import { DatabaseStore } from '../../apps/api/db_store.js';
 import {
   ArtifactType,
   ArtifactProvenance,
+  Confidence,
   FindingStatus,
+  Severity,
 } from '../../packages/core/src/index.js';
 
 const STEPS = [
@@ -60,7 +62,7 @@ describe('Finding provenance gate (anti-fabrication)', () => {
 
     const f = db.createFinding({
       investigation_id: inv.id, target_id: 't1', title: 'engine-backed',
-      category: 'BOLA', severity: 'HIGH', confidence: 'HIGH',
+      category: 'BOLA', severity: Severity.HIGH, confidence: Confidence.HIGH,
     });
     db.linkEvidenceToFinding(f.id, art.id);
 
@@ -83,7 +85,7 @@ describe('Finding provenance gate (anti-fabrication)', () => {
 
     const f = db.createFinding({
       investigation_id: inv.id, target_id: 't1', title: 'caller-backed',
-      category: 'BOLA', severity: 'CRITICAL', confidence: 'HIGH',
+      category: 'BOLA', severity: Severity.CRITICAL, confidence: Confidence.HIGH,
     });
     db.linkEvidenceToFinding(f.id, art.id);
 
@@ -106,7 +108,7 @@ describe('Finding provenance gate (anti-fabrication)', () => {
 
     const f = db.createFinding({
       investigation_id: inv.id, target_id: 't1', title: 'two caller artifacts',
-      category: 'BOLA', severity: 'HIGH', confidence: 'HIGH',
+      category: 'BOLA', severity: Severity.HIGH, confidence: Confidence.HIGH,
     });
     db.linkEvidenceToFinding(f.id, a1.id);
     db.linkEvidenceToFinding(f.id, a2.id);
@@ -121,7 +123,7 @@ describe('Finding provenance gate (anti-fabrication)', () => {
     const { db, inv } = setup();
     const f = db.createFinding({
       investigation_id: inv.id, target_id: 't1', title: 'no evidence',
-      category: 'BOLA', severity: 'HIGH', confidence: 'HIGH',
+      category: 'BOLA', severity: Severity.HIGH, confidence: Confidence.HIGH,
     });
     for (const s of [FindingStatus.ANALYZING, FindingStatus.VERIFICATION_REQUIRED, FindingStatus.TESTING, FindingStatus.REPRODUCED]) {
       db.transitionFinding(f.id, s, 'test');

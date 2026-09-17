@@ -13,7 +13,7 @@ import path from 'path';
 import { WebSocketServer, WebSocket } from 'ws';
 import { createServer as createViteServer } from 'vite';
 
-import { globalDB } from './apps/api/db_store.js';
+import { globalDB, sanitizeTargetWrite, sanitizeProgramWrite } from './apps/api/db_store.js';
 import { globalJobOrchestrator } from './packages/orchestrator/src/index.js';
 import { globalEngineRegistry } from './engines/engine_registry.js';
 import { KNOWN_TAXONOMY } from './packages/vulnerability-intelligence/src/index.js';
@@ -358,9 +358,11 @@ app.post(['/api/v1/programs', '/api/programs'], (req, res) => {
 
 app.patch(['/api/v1/programs/:id', '/api/programs/:id'], (req, res) => {
   try {
-    const updated = globalDB.updateProgram(req.params.id, req.body);
+    // status and freshness_status gate the investigation pre-flight check.
+    const { value, rejected } = sanitizeProgramWrite(req.body || {});
+    const updated = globalDB.updateProgram(req.params.id, value);
     broadcastEvent('program_updated', updated);
-    res.json(updated);
+    res.json({ ...updated, ...(rejected.length ? { rejected_fields: rejected } : {}) });
   } catch (err: any) {
     res.status(400).json({ error: err.message });
   }
@@ -534,10 +536,10 @@ app.post(['/api/v1/targets', '/api/targets'], (req, res) => {
       deployment_information: deployment_information || deployment,
       chain,
       contract_address,
-      source_hash,
-      source_acquisition_status,
-      authorization_status,
-      scope_status,
+      // source_hash / source_acquisition_status / authorization_status /
+      // scope_status are deliberately NOT forwarded. createTarget pins them to
+      // SOURCE_NOT_ACQUIRED / NOT_EVALUATED so a caller cannot register a target
+      // pre-authorized or pre-verified.
       metadata,
     });
 
@@ -553,9 +555,14 @@ app.post(['/api/v1/targets', '/api/targets'], (req, res) => {
 
 app.patch(['/api/v1/targets/:id', '/api/targets/:id'], (req, res) => {
   try {
-    const updated = globalDB.updateTarget(req.params.id, req.body);
+    // Strip server-controlled fields (authorization_status, scope_status,
+    // source_acquisition_status, source_hash, id). These decide whether the
+    // pre-flight gate lets an investigation proceed, so they are never
+    // client-writable. Refused fields are reported rather than silently dropped.
+    const { value, rejected } = sanitizeTargetWrite(req.body || {});
+    const updated = globalDB.updateTarget(req.params.id, value);
     broadcastEvent('target_updated', updated);
-    res.json(updated);
+    res.json({ ...updated, ...(rejected.length ? { rejected_fields: rejected } : {}) });
   } catch (err: any) {
     res.status(400).json({ error: err.message });
   }
