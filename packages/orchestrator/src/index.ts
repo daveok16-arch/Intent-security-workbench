@@ -396,8 +396,15 @@ export class JobOrchestrator {
       }
       if (isSuccess) {
         job.status = JobStatus.COMPLETED;
-        job.execution_status = EngineExecutionStatus.ENGINE_COMPLETED_NO_FINDINGS;
-        this.log(job.id, 'INFO', `Job completed successfully with exit code ${result.exit_code}.`);
+        // Report whether the engine actually produced findings. This was
+        // hardcoded to NO_FINDINGS, so a run that yielded 128 candidates still
+        // reported "completed with no findings" — the execution status
+        // contradicting the results the same run stored.
+        const findingCount = Array.isArray(result.findings) ? result.findings.length : 0;
+        job.execution_status = findingCount > 0
+          ? EngineExecutionStatus.ENGINE_COMPLETED_WITH_FINDINGS
+          : EngineExecutionStatus.ENGINE_COMPLETED_NO_FINDINGS;
+        this.log(job.id, 'INFO', `Job completed successfully with exit code ${result.exit_code} (${findingCount} finding(s)).`);
 
         // Record ENGINE_COMPLETED event
         globalEvidenceEventManager.recordEvent({
