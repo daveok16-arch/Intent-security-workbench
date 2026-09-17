@@ -561,8 +561,23 @@ export class AISecurityController {
   }
 
   /**
-   * Resolves a pending user approval request.
+   * Reports whether a researcher has explicitly approved a tool invocation for
+   * this investigation. Tools gate sensitive actions on this via
+   * `ctx.is_approved(...)`, so callers outside the agent loop (the manual
+   * tool-invoke route) must consult it rather than assuming approval.
    */
+  public isToolApproved(
+    investigation_id: string,
+    tool: string,
+    params: Record<string, any> = {}
+  ): boolean {
+    const action = deriveApprovalKey(tool, params);
+    return (
+      this.approvedActions.has(`${investigation_id}:${action}`) ||
+      this.approvedActions.has(`${investigation_id}:${tool}`)
+    );
+  }
+
   public async approveAction(
     investigation_id: string,
     approval_id: string,

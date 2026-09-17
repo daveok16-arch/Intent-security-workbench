@@ -26,7 +26,7 @@ import {
   globalEvidenceEventManager,
 } from '../../evidence/src/index.js';
 import { SourceSnapshotService, globalSourceSnapshotService } from '../../evidence/src/snapshot.js';
-import { createSanitizedProcessEnv, redactUriCredentials } from '../../config/src/index.js';
+import { createSanitizedProcessEnv, redactUriCredentials, isPathWithinAllowedRoots } from '../../config/src/index.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -201,7 +201,7 @@ export class GitSourceProvider implements SourceProvider {
     }
     const resolved = path.resolve(dir);
     const resolvedBase = path.resolve(this.sandboxBaseDir);
-    if (resolved.startsWith(resolvedBase) || resolved.startsWith('/tmp')) {
+    if (isPathWithinAllowedRoots(resolved, [resolvedBase], { allowTmp: true })) {
       if (fs.existsSync(resolved)) {
         fs.rmSync(resolved, { recursive: true, force: true });
       }
@@ -281,7 +281,7 @@ export class GitSourceProvider implements SourceProvider {
     // Prevent path traversal
     const resolvedDest = path.resolve(destDir);
     const resolvedBase = path.resolve(this.sandboxBaseDir);
-    if (!resolvedDest.startsWith(resolvedBase) && !resolvedDest.startsWith('/tmp')) {
+    if (!isPathWithinAllowedRoots(resolvedDest, [resolvedBase], { allowTmp: true })) {
       return {
         success: false,
         error: `Destination path traversal rejected: ${resolvedDest} is outside ${resolvedBase}`,
