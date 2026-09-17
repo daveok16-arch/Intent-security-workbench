@@ -431,7 +431,9 @@ describe('Phase 5 — Real Dynamic Verification Unit Tests', () => {
   // =========================================================================
   describe('6. Clarinet Adapter Behavior When Missing', () => {
     it('returns ENGINE_NOT_INSTALLED without throwing or faking execution', async () => {
-      const adapter = new ClarinetAdapter();
+      // Pin a binary path that cannot exist so the test asserts the
+      // anti-fabrication invariant rather than the developer's toolchain.
+      const adapter = new ClarinetAdapter('/nonexistent/bin/clarinet');
       const res = await adapter.executeCheck({
         workingDirectory: 'fixtures/dynamic_verification/clarity/vulnerable_bola',
       });

@@ -6,6 +6,7 @@ import { execSync } from 'child_process';
 import { LocalFilesystemArtifactStorage } from '../../packages/evidence/src/storage/local_storage.js';
 import { EvidenceEventManager } from '../../packages/evidence/src/events.js';
 import { ProvenanceService } from '../../packages/evidence/src/provenance.js';
+import { createEvidenceArtifact } from '../../packages/evidence/src/index.js';
 import { DatabaseStore } from '../../apps/api/db_store.js';
 import { JobOrchestrator } from '../../packages/orchestrator/src/index.js';
 import { BaseEngine } from '../../engines/base_engine.js';
@@ -684,5 +685,41 @@ describe('PHASE 0.2 — REAL EVIDENCE & PROVENANCE SUBSYSTEM (18 Definition of D
         expect(f.evidence_artifact_ids.length).toBeGreaterThan(0);
       }
     }
+  });
+
+  // 19. saveEvidence must retain real bytes so integrity re-hashing is possible
+  it('19. saveEvidence preserves real artifact bytes for integrity verification', async () => {
+    const inv = db.createInvestigation({
+      program_id: 'prog-save-evidence',
+      target_id: 'tgt-save-evidence',
+      title: 'saveEvidence integrity',
+      description: 'Artifacts registered outside storeEvidenceArtifact must stay verifiable.',
+    });
+
+    const smtCode = '(set-logic QF_LIA)\n(check-sat)\n';
+    // Mirrors the formal/dynamic verification path: createEvidenceArtifact then saveEvidence.
+    const built = createEvidenceArtifact({
+      investigation_id: inv.id,
+      target_id: 'tgt-save-evidence',
+      artifact_type: ArtifactType.SMT_INPUT,
+      producer: 'formal_dsl_compiler',
+      producer_version: '1.0.0',
+      command: 'compileToSMTLIB2',
+      content: smtCode,
+      mime_type: 'text/plain',
+    });
+
+    db.saveEvidence(built.artifact);
+
+    const integrity = await db.verifyArtifactIntegrity(built.artifact.id);
+    expect(integrity.status).toBe('VALID');
+    expect(integrity.valid).toBe(true);
+    expect(integrity.size_bytes).toBe(Buffer.byteLength(smtCode, 'utf-8'));
+    expect(integrity.actual_sha256).toBe(built.artifact.sha256);
+
+    // The downloadable payload must be the full content, not a truncated preview.
+    const raw = db.getRawArtifactContent(built.artifact.id);
+    expect(raw).toBe(smtCode);
+    expect(String(raw).length).toBeGreaterThanOrEqual(built.artifact.content_preview!.length);
   });
 });

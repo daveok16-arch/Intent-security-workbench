@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { JobOrchestrator } from '../../packages/orchestrator/src/index.js';
 import { JobStatus } from '../../packages/core/src/index.js';
+import { BaseEngine, EngineResultStatus } from '../../engines/index.js';
+import { globalEngineRegistry } from '../../engines/engine_registry.js';
 
 describe('Job Queue & Orchestrator Execution Workflow (Phase 0 Requirement 6, 7, 8, 9)', () => {
   it('should queue a real job and transition to QUEUED with logs', () => {
@@ -89,5 +91,83 @@ describe('Job Queue & Orchestrator Execution Workflow (Phase 0 Requirement 6, 7,
 
     const cancelled = await orchestrator.cancelJob(job.id);
     expect(cancelled.status).toBe(JobStatus.CANCELLED);
+  });
+
+  it('should pass job identity into the engine execution context', async () => {
+    // Engines resolve investigation/target identity from the execution context.
+    // If the orchestrator omitted them, engines fell back to `inv-unknown` and
+    // their candidates/evidence became unattributable to the real investigation.
+    const seen: Record<string, any>[] = [];
+
+    class ContextProbeEngine extends BaseEngine {
+      readonly engine_id = 'context-probe';
+      readonly name = 'Context Probe';
+      readonly version = '1.0.0';
+      readonly description = 'Test-only engine that records the context it receives.';
+      readonly executable = 'git';
+      readonly capabilities = ['probe'];
+      readonly supported_target_types = ['LIBRARY'];
+      readonly supported_languages = ['javascript'];
+
+      async prepare(_targetId: string, _context: Record<string, any>): Promise<boolean> {
+        return true;
+      }
+
+      parse_result(): [] {
+        return [];
+      }
+
+      async cleanup(_context: Record<string, any>): Promise<void> {}
+
+      async execute(targetId: string, operation: string, context: Record<string, any>) {
+        seen.push({ targetId, operation, context });
+        return {
+          id: 'res-context-probe',
+          engine_id: this.engine_id,
+          engine_name: this.name,
+          engine_version: this.version,
+          status: EngineResultStatus.SUCCESS,
+          target_id: targetId,
+          command: 'context-probe',
+          working_directory: process.cwd(),
+          started_at: new Date().toISOString(),
+          completed_at: new Date().toISOString(),
+          duration_ms: 0,
+          exit_code: 0,
+          stdout: 'probe',
+          stderr: '',
+          findings: [],
+          artifacts: [],
+          environment: this.getEnvironmentInfo(),
+          error: null,
+        };
+      }
+    }
+
+    globalEngineRegistry.register(new ContextProbeEngine());
+    try {
+      const orchestrator = new JobOrchestrator();
+      const job = orchestrator.createJob({
+        id: 'job-int-05',
+        investigation_id: 'inv-context-propagation',
+        target_id: 'tgt-context-propagation',
+        engine: 'context-probe',
+        operation: 'probe_op',
+        metadata: { source_directory: '/tmp/source' },
+      });
+
+      const completed = await orchestrator.runJob(job.id);
+      expect(completed.status).toBe(JobStatus.COMPLETED);
+
+      expect(seen).toHaveLength(1);
+      expect(seen[0].targetId).toBe('tgt-context-propagation');
+      expect(seen[0].operation).toBe('probe_op');
+      // Job identity must survive alongside caller-supplied metadata.
+      expect(seen[0].context.investigation_id).toBe('inv-context-propagation');
+      expect(seen[0].context.target_id).toBe('tgt-context-propagation');
+      expect(seen[0].context.source_directory).toBe('/tmp/source');
+    } finally {
+      globalEngineRegistry.unregister('context-probe');
+    }
   });
 });

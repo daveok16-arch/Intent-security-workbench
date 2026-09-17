@@ -3,6 +3,7 @@
  * Intent Security Workbench - Phase 0.1
  */
 
+import { execFileSync } from 'child_process';
 import { BaseEngine } from '../base_engine.js';
 import { EngineResult, EngineResultStatus, EngineFinding, EngineAvailabilityStatus } from '../types.js';
 
@@ -19,6 +20,26 @@ export class AngrEngine extends BaseEngine {
   constructor(executable = 'angr') {
     super();
     this.executable = executable;
+  }
+
+  /**
+   * The `angr` CLI has no `--version` flag (it exits 2 with usage text), so the
+   * default probe would wrongly classify a healthy install as BROKEN. Its
+   * distribution version is the authoritative signal and is read from the
+   * module metadata instead.
+   */
+  async get_version(resolvedPath?: string | null): Promise<string | null> {
+    if (!resolvedPath) return null;
+    try {
+      const output = execFileSync(
+        'python3',
+        ['-c', 'import angr; print(angr.__version__)'],
+        { encoding: 'utf-8', timeout: 8000, stdio: ['ignore', 'pipe', 'pipe'] }
+      ).trim();
+      return output || null;
+    } catch {
+      return null;
+    }
   }
 
   async prepare(targetId: string, context: Record<string, any>): Promise<boolean> {

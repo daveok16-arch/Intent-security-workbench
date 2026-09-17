@@ -108,12 +108,14 @@ export class AISecurityController {
     investigation_id?: string;
     auto_advance?: boolean;
   }): Promise<ControllerState> {
-    const invId = params.investigation_id || `inv-ai-${Date.now()}`;
-    let state = this.states.get(invId);
+    const requestedId = params.investigation_id || `inv-ai-${Date.now()}`;
+    let state = this.states.get(requestedId);
+    // Resolved after any store-assigned id is adopted; used by the auto-advance loop.
+    let invId = requestedId;
 
     if (!state) {
       // Find or establish investigation
-      let existingInv = globalDB.getInvestigation(invId);
+      let existingInv = globalDB.getInvestigation(requestedId);
       if (!existingInv && params.program_id && params.target_id) {
         existingInv = globalDB.createInvestigation({
           program_id: params.program_id,
@@ -123,6 +125,11 @@ export class AISecurityController {
           status: 'ACTIVE' as any,
         });
       }
+
+      // The store assigns its own id. Adopt it so controller state, dispatched
+      // jobs and evidence all reference the persisted investigation rather than
+      // a synthetic id that does not exist in the database.
+      invId = existingInv?.id || requestedId;
 
       const plan = this.generateInitialPlan(params.objective, params.program_id, params.target_id);
 
@@ -157,7 +164,12 @@ export class AISecurityController {
         updated_at: new Date().toISOString(),
       };
 
+      // Keep the requested alias resolvable so callers that passed an explicit
+      // id (or none) can still fetch state by it.
       this.states.set(invId, state);
+      if (requestedId !== invId) {
+        this.states.set(requestedId, state);
+      }
       this.emitEvent(ControllerEventType.CONTROLLER_PHASE_CHANGED, { investigation_id: invId, phase: state.current_phase });
     } else {
       state.current_objective = params.objective;
@@ -528,7 +540,17 @@ export class AISecurityController {
   }
 
   public getAllStates(): ControllerState[] {
-    return Array.from(this.states.values());
+    // One state may be registered under both its canonical id and the caller's
+    // requested alias; deduplicate by state identity so callers see each
+    // investigation exactly once.
+    const seen = new Set<ControllerState>();
+    const unique: ControllerState[] = [];
+    for (const state of this.states.values()) {
+      if (seen.has(state)) continue;
+      seen.add(state);
+      unique.push(state);
+    }
+    return unique;
   }
 
   private generateInitialPlan(objective: string, programId?: string, targetId?: string): ResearchPlan {

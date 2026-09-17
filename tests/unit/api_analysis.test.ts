@@ -269,6 +269,37 @@ app.post('/internal/admin/purge-cache', async (req, res) => {
     expect(Array.isArray(res.findings)).toBe(true);
   });
 
+  it('resolves the Spectral ruleset from the specification directory, not the process cwd', async () => {
+    // Regression: Spectral discovers its ruleset by walking up from the process
+    // cwd. Running from the repo root found none and exited 2, discarding the
+    // run. The service must anchor the child cwd to the spec directory.
+    const specDir = path.join(process.cwd(), 'tests', 'fixtures', 'engines', 'spectral');
+    const res = await globalSpectralService.lintSpecification(
+      path.join(specDir, 'openapi.yaml')
+    );
+
+    expect(res.exit_code).toBe(0);
+    expect(res.available).toBe(true);
+    expect(res.input_specification).toBe(path.join(specDir, 'openapi.yaml'));
+
+    // The fixture's .spectral.yaml declares operation-description as warn, and
+    // the fixture's GET /users has no description, so a real finding must appear.
+    const descriptionFinding = res.findings.find(f => f.metadata?.rule_id === 'operation-description');
+    expect(descriptionFinding).toBeDefined();
+    expect(descriptionFinding!.severity).toBe('MEDIUM');
+    expect(descriptionFinding!.line_start).toBeGreaterThan(0);
+  });
+
+  it('reports a missing specification without fabricating findings', async () => {
+    const res = await globalSpectralService.lintSpecification(
+      path.join(process.cwd(), 'tests', 'fixtures', 'engines', 'spectral', 'does-not-exist.yaml')
+    );
+
+    expect(res.findings).toHaveLength(0);
+    expect(res.exit_code).not.toBe(0);
+    expect(res.error).toBeTruthy();
+  });
+
   // Test 7: Full Pipeline & Authorization (BOLA) Analysis & Candidate Invariant
   it('runs orchestrator pipeline, identifies BOLA candidate where role check fails to satisfy ownership, and keeps status CANDIDATE', async () => {
     const result = await globalAPIAnalysisOrchestrator.runAnalysis({

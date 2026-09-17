@@ -80,4 +80,23 @@ describe('Program Adapters (Multi-Platform Scope Ingestion & Normalization)', ()
     expect(normalized[0].asset_type).toBe(ScopeAssetType.REPOSITORY);
     expect(normalized[0].asset_identifier).toBe('https://github.com/solana-labs/solana-program-library');
   });
+
+  it('Immunefi adapter accepts the documented external_identifier alias as provenance', () => {
+    const adapter = globalProgramAdapterRegistry.get(BountyPlatform.IMMUNEFI);
+
+    // `external_identifier` is a documented alias of `external_id` on Program.
+    const viaAlias = adapter.validateProgram({ name: 'Scoped Program', external_identifier: 'slug-123' });
+    expect(viaAlias.valid).toBe(true);
+
+    const viaCanonical = adapter.validateProgram({ name: 'Scoped Program', external_id: 'slug-123' });
+    expect(viaCanonical.valid).toBe(true);
+
+    const viaUrl = adapter.validateProgram({ name: 'Scoped Program', program_url: 'https://immunefi.com/bounty/x' });
+    expect(viaUrl.valid).toBe(true);
+
+    // Genuinely missing provenance must still be rejected.
+    const missing = adapter.validateProgram({ name: 'Scoped Program' });
+    expect(missing.valid).toBe(false);
+    expect(missing.errors.join(' ')).toContain('required for authoritative provenance');
+  });
 });

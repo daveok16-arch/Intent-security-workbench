@@ -247,11 +247,19 @@ export class JobOrchestrator {
         return job;
       }
 
+      // Engines read investigation/target identity from the execution context, so
+      // it must carry the job's own identifiers even when metadata is supplied.
+      const executionContext = {
+        ...job.metadata,
+        investigation_id: job.investigation_id,
+        target_id: job.target_id,
+      };
+
       this.log(job.id, 'INFO', `Engine available at ${avail.detected_path || 'system'}. Preparing execution context...`);
-      await engine.prepare(job.target_id, job.metadata);
+      await engine.prepare(job.target_id, executionContext);
 
       this.log(job.id, 'INFO', `Executing engine operation: ${job.operation}...`);
-      const result = await engine.execute(job.target_id, job.operation, job.metadata);
+      const result = await engine.execute(job.target_id, job.operation, executionContext);
 
       job.completed_at = result.completed_at || (result as any).execution_end || new Date().toISOString();
       job.exit_code = result.exit_code;

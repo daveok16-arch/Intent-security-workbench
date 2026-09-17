@@ -317,7 +317,10 @@ app.post(['/api/v1/programs', '/api/programs'], (req, res) => {
     }
 
     const adapter = getProgramAdapter(platform);
-    const validation = adapter.validateProgram({ name, scope, program_url, external_id });
+    // The client may supply either alias; normalize before validation so an
+    // `external_identifier`-only payload is not rejected as missing provenance.
+    const resolvedExternalId = (external_id || external_identifier || '').trim();
+    const validation = adapter.validateProgram({ name, scope, program_url, external_id: resolvedExternalId });
     if (!validation.valid) {
       return res.status(400).json({ error: 'Validation failed', details: validation.errors });
     }
@@ -784,8 +787,7 @@ app.post('/api/jobs/:id/run', async (req, res) => {
     // Execute asynchronously on background worker
     setTimeout(async () => {
       await globalJobOrchestrator.runJob(jobId, (artifact) => {
-        globalDB.evidence.set(artifact.id, artifact);
-        globalDB.rawArtifactStorage.set(artifact.id, artifact.content_preview || '');
+        globalDB.saveEvidence(artifact);
         broadcastEvent('evidence_created', artifact);
       });
     }, 100);
@@ -1192,8 +1194,7 @@ app.post(['/api/v1/investigations/:id/analysis/static', '/api/investigations/:id
     setTimeout(async () => {
       try {
         await globalJobOrchestrator.runJob(job.id, (artifact) => {
-          globalDB.evidence.set(artifact.id, artifact);
-          globalDB.rawArtifactStorage.set(artifact.id, artifact.content_preview || '');
+          globalDB.saveEvidence(artifact);
           broadcastEvent('evidence_created', artifact);
         });
       } catch (err: any) {

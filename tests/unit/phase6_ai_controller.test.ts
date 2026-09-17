@@ -339,4 +339,81 @@ describe('Phase 6 — AI Security Control Plane Core', () => {
       expect(resolvedState.blockers.some(b => b.code === 'RESEARCHER_REJECTED')).toBe(true);
     });
   });
+
+  describe('Investigation identity binding', () => {
+    it('adopts the store-assigned investigation id when auto-creating one', async () => {
+      // Regression: the controller used to keep a synthetic `inv-ai-<ts>` id even
+      // after the store created the investigation under its own id, so dispatched
+      // jobs referenced an investigation that did not exist.
+      const program = globalDB.createProgram({
+        name: 'AI Identity Program',
+        platform: BountyPlatform.CUSTOM,
+        scope: ['https://github.com/example/ai-identity'],
+        metadata: {},
+      });
+      const target = globalDB.createTarget({
+        program_id: program.id,
+        name: 'ai-identity-target',
+        target_type: TargetType.REPOSITORY,
+        ecosystem: Ecosystem.WEB_API,
+        repository_url: 'https://github.com/example/ai-identity',
+        metadata: {},
+      });
+
+      const state = await controller.executeObjective({
+        objective: 'Assess authorization risk in handlers',
+        program_id: program.id,
+        target_id: target.id,
+        auto_advance: false,
+      });
+
+      // The controller's id must correspond to a real persisted investigation.
+      const persisted = globalDB.getInvestigation(state.investigation_id);
+      expect(persisted).toBeDefined();
+      expect(persisted!.id).toBe(state.investigation_id);
+      expect(persisted!.program_id).toBe(program.id);
+      expect(persisted!.target_id).toBe(target.id);
+
+      // State must be retrievable under the same id the controller reports.
+      expect(controller.getState(state.investigation_id)).toBeDefined();
+
+      // The requested alias and canonical id must not produce duplicate states.
+      const listed = controller.getAllStates().filter(s => s.investigation_id === state.investigation_id);
+      expect(listed).toHaveLength(1);
+    });
+
+    it('honours an explicitly supplied investigation id', async () => {
+      const program = globalDB.createProgram({
+        name: 'AI Explicit Id Program',
+        platform: BountyPlatform.CUSTOM,
+        scope: ['https://github.com/example/explicit'],
+        metadata: {},
+      });
+      const target = globalDB.createTarget({
+        program_id: program.id,
+        name: 'explicit-target',
+        target_type: TargetType.REPOSITORY,
+        ecosystem: Ecosystem.WEB_API,
+        repository_url: 'https://github.com/example/explicit',
+        metadata: {},
+      });
+      const investigation = globalDB.createInvestigation({
+        program_id: program.id,
+        target_id: target.id,
+        title: 'Explicit investigation',
+        description: 'created by test',
+      });
+
+      const state = await controller.executeObjective({
+        objective: 'Review explicit investigation',
+        investigation_id: investigation.id,
+        program_id: program.id,
+        target_id: target.id,
+        auto_advance: false,
+      });
+
+      expect(state.investigation_id).toBe(investigation.id);
+      expect(globalDB.getInvestigation(investigation.id)).toBeDefined();
+    });
+  });
 });

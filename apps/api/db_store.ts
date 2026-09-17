@@ -26,6 +26,7 @@ import {
   globalEvidenceEventManager,
   globalSourceSnapshotService,
   globalProvenanceService,
+  registeredEvidenceArtifacts,
   IArtifactStorage,
 } from '../../packages/evidence/src/index.js';
 import { globalGitSourceProvider } from '../../packages/source/src/index.js';
@@ -867,6 +868,14 @@ export class DatabaseStore {
 
   saveEvidence(evidence: EvidenceArtifact): EvidenceArtifact {
     this.evidence.set(evidence.id, evidence);
+    // Artifacts built outside storeEvidenceArtifact (formal/dynamic verification)
+    // already registered their real bytes globally; mirror them into the local
+    // raw store so integrity verification and download return genuine content
+    // instead of an INVALID empty payload.
+    const registered = registeredEvidenceArtifacts.get(evidence.id);
+    if (registered && !this.rawArtifactStorage.has(evidence.id)) {
+      this.rawArtifactStorage.set(evidence.id, registered.content);
+    }
     return evidence;
   }
 

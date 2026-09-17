@@ -184,7 +184,7 @@ export class ImmunefiAdapter extends BaseProgramAdapter {
     if (!program.name || program.name.trim().length === 0) {
       errors.push('Program name is required.');
     }
-    if (!program.program_url && !program.metadata?.immunefi_url && !program.external_id) {
+    if (!program.program_url && !program.metadata?.immunefi_url && !program.external_id && !program.external_identifier) {
       errors.push('Immunefi program URL or external slug is required for authoritative provenance.');
     }
     return { valid: errors.length === 0, errors };

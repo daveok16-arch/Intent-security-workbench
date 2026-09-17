@@ -111,12 +111,17 @@ export class SpectralEngine extends BaseEngine {
     const lintResult = await this.service.lintSpecification(specPath, rulesetPath);
     const endTime = new Date().toISOString();
 
+    // Spectral exit codes: 0 = clean, 2 = findings at/above fail-severity,
+    // 1 = unexpected error, 127 = binary unavailable. A run that completed and
+    // reported rule violations is a successful analysis, not an engine failure.
+    const completed = lintResult.exit_code === 0 || lintResult.exit_code === 2;
+
     return {
       id: `res-${this.engine_id}-${Date.now()}`,
       engine_id: this.engine_id,
       engine_name: this.name,
       engine_version: avail.version,
-      status: lintResult.exit_code === 0 ? EngineResultStatus.SUCCESS : EngineResultStatus.FAILED,
+      status: completed ? EngineResultStatus.SUCCESS : EngineResultStatus.FAILED,
       target_id: targetId,
       investigation_id: context.investigation_id,
       command: lintResult.command,
@@ -130,7 +135,7 @@ export class SpectralEngine extends BaseEngine {
       findings: lintResult.findings,
       artifacts: [],
       environment: this.getEnvironmentInfo(avail.detected_path),
-      error: lintResult.error,
+      error: completed ? null : lintResult.error,
     };
   }
 

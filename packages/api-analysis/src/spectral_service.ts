@@ -94,7 +94,15 @@ export class SpectralAnalysisService {
     rulesetPath?: string
   ): Promise<SpectralExecutionResult> {
     const avail = await this.checkAvailability();
-    const command = `${avail.path || this.executable} lint "${specificationFilePath}" -f json${rulesetPath ? ` --ruleset "${rulesetPath}"` : ''}`;
+
+    // Spectral discovers its ruleset by walking up from the process cwd, and
+    // resolves a relative spec path against that same cwd. Running from the
+    // repo root therefore found no ruleset and exited 2. Anchor both the spec
+    // and the child cwd to the specification's own directory instead.
+    const absSpecPath = path.resolve(specificationFilePath);
+    const specDir = path.dirname(absSpecPath);
+    const absRulesetPath = rulesetPath ? path.resolve(rulesetPath) : undefined;
+    const command = `${avail.path || this.executable} lint "${absSpecPath}" -f json${absRulesetPath ? ` --ruleset "${absRulesetPath}"` : ''}`;
 
     if (!avail.available || !avail.path) {
       return {
@@ -102,8 +110,8 @@ export class SpectralAnalysisService {
         executable: this.executable,
         version: null,
         command,
-        ruleset: rulesetPath,
-        input_specification: specificationFilePath,
+        ruleset: absRulesetPath,
+        input_specification: absSpecPath,
         stdout: '',
         stderr: avail.error || 'ENGINE_NOT_INSTALLED: Spectral executable not available on host.',
         exit_code: 127,
@@ -113,26 +121,26 @@ export class SpectralAnalysisService {
       };
     }
 
-    if (!fs.existsSync(specificationFilePath)) {
+    if (!fs.existsSync(absSpecPath)) {
       return {
         available: true,
         executable: avail.path,
         version: avail.version,
         command,
-        ruleset: rulesetPath,
-        input_specification: specificationFilePath,
+        ruleset: absRulesetPath,
+        input_specification: absSpecPath,
         stdout: '',
-        stderr: `Specification file not found: ${specificationFilePath}`,
+        stderr: `Specification file not found: ${absSpecPath}`,
         exit_code: 1,
         duration_ms: 0,
         findings: [],
-        error: `Specification file does not exist at ${specificationFilePath}`,
+        error: `Specification file does not exist at ${absSpecPath}`,
       };
     }
 
-    const args = ['lint', specificationFilePath, '-f', 'json'];
-    if (rulesetPath && fs.existsSync(rulesetPath)) {
-      args.push('--ruleset', rulesetPath);
+    const args = ['lint', absSpecPath, '-f', 'json'];
+    if (absRulesetPath && fs.existsSync(absRulesetPath)) {
+      args.push('--ruleset', absRulesetPath);
     }
 
     const startTime = Date.now();
@@ -145,6 +153,7 @@ export class SpectralAnalysisService {
         encoding: 'utf-8',
         timeout: 30000,
         maxBuffer: 10 * 1024 * 1024,
+        cwd: fs.existsSync(specDir) ? specDir : undefined,
         stdio: ['ignore', 'pipe', 'pipe'],
       });
       exitCode = 0;
