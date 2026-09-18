@@ -76,7 +76,7 @@ pip install semgrep
 npm run dev        # dev server with Vite middleware (API_PORT/API_HOST honored)
 npm run build      # production frontend build + server bundle
 npm start          # run the built server
-npm test           # vitest — 172 tests
+npm test           # vitest — 221 tests
 npm run lint       # tsc --noEmit
 ```
 

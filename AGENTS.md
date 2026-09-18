@@ -176,6 +176,14 @@ docker run -p 3000:3000 intent-workbench
 
 ## Gotchas
 - `npm run build` warns about a >500 kB chunk (the UI bundle). Harmless.
+- **The suite must stay idempotent — do not let tests touch `storage/db/`.** The store
+  write-through-persists every mutation to `storage/db/workbench-state.json` and rehydrates it in
+  the `DatabaseStore` constructor. Tests used to inherit the default directory, so records written
+  by one test file were restored on the next run and `tests/integration/phase_0_2_evidence_provenance.test.ts`
+  saw stale evidence alongside its own (4 instead of 2). The suite therefore passed on a clean
+  checkout and failed on an immediate re-run. `vitest.config.ts` now pins `PERSISTENCE_DIR` to a
+  per-run temp directory. Keep it that way: if you add a test that constructs a `DatabaseStore`,
+  it must not read or write the developer's real snapshot.
 - Foundry fixtures write into `fixtures/dynamic_verification/**/out/` and `cache/`; the dev server's
   Vite watcher reloads the page on each write. Those paths are gitignored.
 - A Semgrep scan root is resolved to an absolute path before execution: `cwd` is set to the target
