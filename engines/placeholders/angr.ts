@@ -5,6 +5,8 @@
 
 import { BaseEngine } from '../base_engine.js';
 import { EngineResult, EngineResultStatus, EngineFinding, EngineAvailabilityStatus } from '../types.js';
+import { execFileSync } from 'child_process';
+import { readFileSync } from 'fs';
 
 export class AngrEngine extends BaseEngine {
   readonly engine_id = 'angr';
@@ -19,6 +21,47 @@ export class AngrEngine extends BaseEngine {
   constructor(executable = 'angr') {
     super();
     this.executable = executable;
+  }
+
+  /**
+   * angr has no `--version` flag and does not accept `-c` either: the CLI is an
+   * argparse front end that exits 2 with usage text unless given a binary and a
+   * command. The base probe therefore misreports a healthy install as BROKEN.
+   *
+   * The `angr` console script is a Python entry point, so its shebang names the
+   * interpreter that owns the package. Ask that interpreter for the installed
+   * distribution version. Returns null when the version cannot be read, so
+   * availability stays truthful rather than guessed.
+   */
+  override async get_version(resolvedPath?: string | null): Promise<string | null> {
+    const target = resolvedPath || this.executable;
+    if (!target) return null;
+
+    let interpreter: string | null = null;
+    try {
+      const firstLine = readFileSync(target, 'utf-8').split('\n', 1)[0].trim();
+      if (firstLine.startsWith('#!')) {
+        interpreter = firstLine.slice(2).trim().split(/\s+/)[0];
+      }
+    } catch {
+      return null;
+    }
+    if (!interpreter) return null;
+
+    const probe =
+      'import importlib.metadata as m, angr; ' +
+      'print(getattr(angr, "__version__", None) or m.version("angr"))';
+
+    try {
+      const output = execFileSync(interpreter, ['-c', probe], {
+        encoding: 'utf-8',
+        timeout: 20000,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      }).trim();
+      return output || null;
+    } catch {
+      return null;
+    }
   }
 
   async prepare(targetId: string, context: Record<string, any>): Promise<boolean> {

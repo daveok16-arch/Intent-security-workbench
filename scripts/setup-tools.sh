@@ -92,7 +92,28 @@ fi
 
 # --- Optional engines ---------------------------------------------------------
 install_python_tool slither slither-analyzer || true
-install_python_tool angr angr || true
+
+# angr must stay pinned at 9.2.160. angr 10.x pins z3-solver==5.1.0.0, which
+# replaces the 4.x that tests/unit/formal_verification.test.ts asserts, so an
+# unpinned install here silently breaks the Z3 suite *after* the z3 check above
+# has already passed. 9.2.160 pins z3-solver==4.13.0.0 and needs pycparser==2.22
+# (3.x breaks angr.sim_type).
+if have python3 && python3 -c "import angr" >/dev/null 2>&1; then
+  angr_v="$(python3 -c 'import angr; print(angr.__version__)' 2>/dev/null || echo unknown)"
+  if [[ "$angr_v" == 9.2.160 ]]; then
+    ok "angr ($angr_v)"
+  else
+    skip "angr $angr_v is not the pinned 9.2.160 (run: pip install 'angr==9.2.160' 'pycparser==2.22')"
+    FAILED=1
+  fi
+else
+  install_python_tool angr "angr==9.2.160" || true
+fi
+# pycparser is pinned alongside angr; keep it aligned.
+if [[ $CHECK_ONLY -eq 0 ]] && have python3 && python3 -c "import angr" >/dev/null 2>&1; then
+  pip="$(require_pip)"
+  [[ -n "$pip" ]] && "$pip" install --quiet --user "pycparser==2.22" >/dev/null 2>&1 || true
+fi
 
 if have spectral || [[ -x node_modules/.bin/spectral ]]; then ok "spectral (project dependency)"
 else skip "spectral (run: npm install)"; fi
@@ -100,7 +121,7 @@ else skip "spectral (run: npm install)"; fi
 printf "\n"
 if [[ $FAILED -eq 0 ]]; then
   printf "%sAll required tools present.%s\n\n" "$GREEN" "$NC"
-  printf "Run 'npm test' to verify the engines detect them (172 tests).\n\n"
+  printf "Run 'npm test' to verify the engines detect them (221 tests).\n\n"
   exit 0
 else
   printf "%sSome tools are missing.%s The workbench will still run and will report\n" "$YELLOW" "$NC"
