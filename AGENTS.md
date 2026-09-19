@@ -134,6 +134,16 @@ with `ENGINE_NOT_IMPLEMENTED`, and they never fabricate findings.
 binary) and stays `NOT_INSTALLED`; real Forge/Anvil execution lives in Phase 5
 dynamic verification via `ToolDetector.detectForge()`.
 
+`angr` has no `--version` flag *and* rejects `-c`: its CLI is an argparse front
+end that exits 2 with usage text unless given a binary and a command. The base
+`get_version()` probe therefore reported a healthy install as `BROKEN` with a
+non-null `detected_path`, which both defeats the engine and breaks
+`tests/unit/engine_abstraction.test.ts` (it asserts that a non-AVAILABLE engine
+exposes a null path). `AngrEngine.get_version()` overrides the probe: it reads
+the shebang from the `angr` console script to find the owning interpreter, then
+asks that interpreter for the installed distribution version. Keep that override
+if `angr` is ever restructured.
+
 ## Persistence
 
 Domain records (programs, targets, scope entries, investigations, findings,
